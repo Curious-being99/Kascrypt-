@@ -1,0 +1,108 @@
+name: Build Android APK (Debug, Release & Unsigned)
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build All APK Variants
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Grant Execute Permission for Gradle Wrapper
+        run: chmod +x gradlew || true
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      # 1. Build Standard Debug APK
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      # 2. Prepare Keystore and Build Release APK
+      - name: Prepare Signing Keystore
+        id: prepare-keystore
+        run: |
+          if [ -n "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" ]; then
+            echo "Using custom release keystore secret from GitHub repository..."
+            echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > release.keystore
+            echo "KEYSTORE_PATH=$(pwd)/release.keystore" >> $GITHUB_ENV
+            echo "STORE_PASSWORD=${{ secrets.STORE_PASSWORD || 'android' }}" >> $GITHUB_ENV
+            echo "KEY_ALIAS=${{ secrets.KEY_ALIAS || 'upload' }}" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD || 'android' }}" >> $GITHUB_ENV
+          else
+            echo "Generating self-contained permanent release keystore for CI..."
+            keytool -genkey -v -keystore release.keystore \
+              -alias upload \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass android \
+              -keypass android \
+              -dname "CN=KasCrypt, OU=Security, O=KasCrypt, L=Global, S=Global, C=US"
+            echo "KEYSTORE_PATH=$(pwd)/release.keystore" >> $GITHUB_ENV
+            echo "STORE_PASSWORD=android" >> $GITHUB_ENV
+            echo "KEY_ALIAS=upload" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=android" >> $GITHUB_ENV
+          fi
+
+      - name: Build Signed Release APK
+        run: ./gradlew assembleRelease --stacktrace
+
+      # 3. Build Permanent Unsigned Release APK
+      - name: Generate Unsigned Release APK
+        run: |
+          mkdir -p build-unsigned
+          SIGNED_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          if [ -n "$SIGNED_APK" ]; then
+            echo "Producing clean unsigned APK from: $SIGNED_APK"
+            cp "$SIGNED_APK" build-unsigned/app-release-unsigned.apk
+            # Strip META-INF signatures to produce true unsigned release APK
+            zip -d build-unsigned/app-release-unsigned.apk "META-INF/*.SF" "META-INF/*.RSA" "META-INF/*.DSA" "META-INF/*.EC" "META-INF/MANIFEST.MF" || true
+            echo "Successfully created build-unsigned/app-release-unsigned.apk"
+          else
+            echo "Signed release APK not found!"
+            exit 1
+          fi
+
+      # 4. Upload All Artifacts Permanently (retention-days: 90)
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload Signed Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-signed-apk
+          path: app/build/outputs/apk/release/*.apk
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload Unsigned Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-unsigned-apk
+          path: build-unsigned/*.apk
+          retention-days: 90
+          if-no-files-found: error

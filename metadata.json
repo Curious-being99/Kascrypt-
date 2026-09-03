@@ -1,0 +1,6 @@
+{
+  "name": "Kascrypt",
+  "description": "Post-quantum secure local vault with Argon2, ML-KEM-1024, ML-DSA-87, XChaCha20-Poly1305, and BLAKE2b Merkle tree signatures.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
