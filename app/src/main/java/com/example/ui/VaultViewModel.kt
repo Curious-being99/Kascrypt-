@@ -299,6 +299,41 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
         _biometricStatus.value = BiometricAuthManager.checkBiometricStatus(context)
     }
 
+    fun verifyMasterPassword(password: String, onResult: (Boolean, String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                if (password.isBlank()) {
+                    onResult(false, "Password cannot be empty.")
+                    return@launch
+                }
+                val testDerived = withContext(Dispatchers.Default) {
+                    CryptoManager.deriveKey(password, walletKey)
+                }
+                val authVerifier = db.vaultDao().getConfig("auth_verifier")
+                if (authVerifier != null) {
+                    val verifierBytes = kotlin.io.encoding.Base64.Default.decode(authVerifier)
+                    val decrypted = CryptoManager.decryptXChaCha20Poly1305(verifierBytes, testDerived)
+                    val isValid = String(decrypted, Charsets.UTF_8) == "KASCRYPT_VALID_VAULT_TOKEN"
+                    if (isValid) {
+                        onResult(true, null)
+                    } else {
+                        onResult(false, "Incorrect master password.")
+                    }
+                } else {
+                    // Fallback comparison with active derivedKey if available
+                    val isValid = derivedKey != null && testDerived.contentEquals(derivedKey)
+                    if (isValid) {
+                        onResult(true, null)
+                    } else {
+                        onResult(false, "Incorrect master password.")
+                    }
+                }
+            } catch (e: Exception) {
+                onResult(false, "Invalid master password.")
+            }
+        }
+    }
+
     fun enableBiometric(password: String, onResult: (Boolean, String?) -> Unit) {
         viewModelScope.launch {
             try {

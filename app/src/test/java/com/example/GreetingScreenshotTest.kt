@@ -21,7 +21,7 @@ class GreetingScreenshotTest {
 
   @Test
   fun greeting_screenshot() {
-    composeTestRule.setContent { MyApplicationTheme { SetupScreen(onSetup = {}) } }
+    composeTestRule.setContent { MyApplicationTheme { SetupScreen(isBiometricAvailable = false, onSetup = { _, _ -> }) } }
 
     composeTestRule.onRoot().captureRoboImage(filePath = "src/test/screenshots/greeting.png")
   }

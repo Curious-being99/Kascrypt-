@@ -3,8 +3,10 @@ package com.example
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Bundle
+import android.provider.MediaStore
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -642,21 +644,64 @@ fun VaultScreen(viewModel: VaultViewModel) {
         var isSearching by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
+    val activity = context as? FragmentActivity
     var selectedImageUri by remember { mutableStateOf<android.net.Uri?>(null) }
     var showImageUploadDialog by remember { mutableStateOf(false) }
     var imageUploadTitle by remember { mutableStateOf("") }
     var isEncryptingImage by remember { mutableStateOf(false) }
+    var showSeedAuthFromWallet by remember { mutableStateOf(false) }
+    var isSeedRevealedInWallet by remember { mutableStateOf(false) }
 
-    val imagePickerLauncher = rememberLauncherForActivityResult(
+    val onImageSelected: (android.net.Uri?) -> Unit = { uri ->
+        if (uri != null) {
+            selectedImageUri = uri
+            imageUploadTitle = ""
+            showImageUploadDialog = true
+        }
+    }
+
+    val pickVisualMediaLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+        onResult = onImageSelected
+    )
+
+    val getContentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent(),
-        onResult = { uri ->
-            if (uri != null) {
-                selectedImageUri = uri
-                imageUploadTitle = ""
-                showImageUploadDialog = true
-            }
+        onResult = onImageSelected
+    )
+
+    val activityResultLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult(),
+        onResult = { result ->
+            val uri = result.data?.data
+            onImageSelected(uri)
         }
     )
+
+    val launchSafeImagePicker: () -> Unit = {
+        try {
+            pickVisualMediaLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+        } catch (e: Exception) {
+            try {
+                getContentLauncher.launch("image/*")
+            } catch (e2: Exception) {
+                try {
+                    val pickIntent = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+                    activityResultLauncher.launch(pickIntent)
+                } catch (e3: Exception) {
+                    try {
+                        val getImgIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                            type = "image/*"
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                        }
+                        activityResultLauncher.launch(Intent.createChooser(getImgIntent, "Select Image to Encrypt"))
+                    } catch (e4: Exception) {
+                        Toast.makeText(context, "No gallery or photo picker app found on device.", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -712,7 +757,7 @@ fun VaultScreen(viewModel: VaultViewModel) {
                         Icon(Icons.Default.AccountBalanceWallet, contentDescription = "Kaspa Wallet", tint = MaterialTheme.colorScheme.primary)
                     }
                     IconButton(onClick = { 
-                        imagePickerLauncher.launch("image/*")
+                        launchSafeImagePicker()
                     }, modifier = Modifier.testTag("img_btn")) {
                         Icon(Icons.Default.Image, contentDescription = "Upload Image")
                     }
@@ -1127,7 +1172,7 @@ fun VaultScreen(viewModel: VaultViewModel) {
                         OutlinedButton(
                             onClick = {
                                 showAddDialog = false
-                                imagePickerLauncher.launch("image/*")
+                                launchSafeImagePicker()
                             },
                             modifier = Modifier.fillMaxWidth()
                         ) {
@@ -1324,7 +1369,26 @@ fun VaultScreen(viewModel: VaultViewModel) {
                 utxos = walletUtxos,
                 isRefreshing = isRefreshingBalance,
                 onRefresh = { viewModel.refreshKaspaWalletBalance() },
-                onDismiss = { showWalletDialog = false }
+                onRequestRevealSeed = { showSeedAuthFromWallet = true },
+                onHideSeed = { isSeedRevealedInWallet = false },
+                isSeedRevealed = isSeedRevealedInWallet,
+                onDismiss = { 
+                    showWalletDialog = false
+                    isSeedRevealedInWallet = false
+                }
+            )
+        }
+
+        // Seed Phrase Authentication Dialog from Wallet
+        if (showSeedAuthFromWallet && kaspaWallet != null) {
+            SeedPhraseAuthDialog(
+                viewModel = viewModel,
+                activity = activity,
+                onAuthenticated = {
+                    showSeedAuthFromWallet = false
+                    isSeedRevealedInWallet = true
+                },
+                onDismiss = { showSeedAuthFromWallet = false }
             )
         }
 
@@ -1371,6 +1435,9 @@ fun KaspaWalletDialog(
     utxos: List<com.example.network.KaspaUtxoEntry>,
     isRefreshing: Boolean,
     onRefresh: () -> Unit,
+    onRequestRevealSeed: () -> Unit,
+    onHideSeed: () -> Unit,
+    isSeedRevealed: Boolean,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -1403,13 +1470,15 @@ fun KaspaWalletDialog(
         text = {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
             ) {
                 // QR Code
                 KaspaQrCode(
                     address = wallet.address,
                     modifier = Modifier
-                        .size(180.dp)
+                        .size(160.dp)
                         .shadow(12.dp, RoundedCornerShape(16.dp), spotColor = Color(0xFF70C7BA))
                 )
 
@@ -1492,6 +1561,32 @@ fun KaspaWalletDialog(
                         }
                     }
                 }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Recovery Seed Phrase Section
+                if (isSeedRevealed) {
+                    RevealedSeedPhraseCard(
+                        mnemonic = wallet.mnemonic,
+                        onHide = onHideSeed,
+                        onCopy = {
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            val clip = ClipData.newPlainText("Vault Recovery Seed", wallet.mnemonic)
+                            clipboard.setPrimaryClip(clip)
+                            Toast.makeText(context, "Recovery seed copied! Clear clipboard after use.", Toast.LENGTH_LONG).show()
+                        }
+                    )
+                } else {
+                    OutlinedButton(
+                        onClick = onRequestRevealSeed,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth().height(46.dp)
+                    ) {
+                        Icon(Icons.Default.VpnKey, contentDescription = null, modifier = Modifier.size(18.dp), tint = Color(0xFF70C7BA))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("View Recovery Seed Phrase", style = MaterialTheme.typography.labelLarge)
+                    }
+                }
             }
         },
         confirmButton = {
@@ -1500,6 +1595,282 @@ fun KaspaWalletDialog(
             }
         }
     )
+}
+
+@Composable
+fun SeedPhraseAuthDialog(
+    viewModel: VaultViewModel,
+    activity: FragmentActivity?,
+    onAuthenticated: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val isBiometricEnabled by viewModel.isBiometricEnabled.collectAsStateWithLifecycle()
+    val biometricStatus by viewModel.biometricStatus.collectAsStateWithLifecycle()
+    var passwordInput by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var isVerifying by remember { mutableStateOf(false) }
+
+    val triggerBiometrics: () -> Unit = {
+        if (activity != null && biometricStatus == BiometricAuthManager.BiometricStatus.AVAILABLE) {
+            BiometricAuthManager.showBiometricPrompt(
+                activity = activity,
+                title = "Unlock Seed Phrase",
+                subtitle = "Biometric Verification",
+                description = "Scan your fingerprint or face to view your recovery phrase",
+                negativeButtonText = "Use Password",
+                onSuccess = {
+                    onAuthenticated()
+                },
+                onError = { err ->
+                    errorMessage = err
+                },
+                onCancel = { }
+            )
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (isBiometricEnabled && biometricStatus == BiometricAuthManager.BiometricStatus.AVAILABLE && activity != null) {
+            triggerBiometrics()
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.background,
+        titleContentColor = MaterialTheme.colorScheme.primary,
+        textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF70C7BA).copy(alpha = 0.2f))
+                ) {
+                    Icon(Icons.Default.VpnKey, contentDescription = null, tint = Color(0xFF70C7BA), modifier = Modifier.size(20.dp))
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Text("Unlock Seed Phrase", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column {
+                Text(
+                    "Your BIP-39 recovery seed controls all your encrypted secrets and Kaspa funds. Authenticate via biometrics or master password to reveal it.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                if (isBiometricEnabled && biometricStatus == BiometricAuthManager.BiometricStatus.AVAILABLE) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Button(
+                        onClick = { triggerBiometrics() },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black),
+                        modifier = Modifier.fillMaxWidth().height(48.dp)
+                    ) {
+                        Icon(Icons.Default.Fingerprint, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("UNLOCK WITH BIOMETRICS", fontWeight = FontWeight.Bold)
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        HorizontalDivider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                        Text(" OR MASTER PASSWORD ", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 4.dp))
+                        HorizontalDivider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+                OutlinedTextField(
+                    value = passwordInput,
+                    onValueChange = { 
+                        passwordInput = it
+                        errorMessage = null 
+                    },
+                    label = { Text("Master Password") },
+                    placeholder = { Text("Enter your master password") },
+                    visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                            Icon(
+                                if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (passwordVisible) "Hide password" else "Show password",
+                                tint = Color(0xFF70C7BA)
+                            )
+                        }
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    singleLine = true,
+                    enabled = !isVerifying,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                if (errorMessage != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(errorMessage!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (passwordInput.isBlank()) {
+                        errorMessage = "Please enter your master password."
+                        return@Button
+                    }
+                    isVerifying = true
+                    viewModel.verifyMasterPassword(passwordInput) { success, err ->
+                        isVerifying = false
+                        if (success) {
+                            onAuthenticated()
+                        } else {
+                            errorMessage = err ?: "Incorrect master password."
+                        }
+                    }
+                },
+                enabled = !isVerifying,
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black)
+            ) {
+                if (isVerifying) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.Black)
+                } else {
+                    Text("VERIFY & REVEAL", fontWeight = FontWeight.Bold)
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    )
+}
+
+@Composable
+fun RevealedSeedPhraseCard(
+    mnemonic: String,
+    onHide: () -> Unit,
+    onCopy: () -> Unit
+) {
+    val words = remember(mnemonic) { mnemonic.trim().split("\\s+".toRegex()) }
+    var secondsRemaining by remember { mutableIntStateOf(60) }
+
+    LaunchedEffect(Unit) {
+        while (secondsRemaining > 0) {
+            kotlinx.coroutines.delay(1000L)
+            secondsRemaining -= 1
+        }
+        onHide()
+    }
+
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, Color(0xFF70C7BA).copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.LockOpen, contentDescription = null, tint = Color(0xFF70C7BA), modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Recovery Phrase (Revealed)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = Color(0xFF70C7BA))
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Concealing in ${secondsRemaining}s", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    IconButton(onClick = onHide, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.VisibilityOff, contentDescription = "Hide", tint = Color(0xFF70C7BA), modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // 2-column layout of word chips
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                for (row in words.chunked(2)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        for (w in row) {
+                            val idx = words.indexOf(w) + 1
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.background.copy(alpha = 0.8f))
+                                    .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                                    .padding(horizontal = 10.dp, vertical = 8.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        "$idx.",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF70C7BA)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        w,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onBackground
+                                    )
+                                }
+                            }
+                        }
+                        if (row.size == 1) {
+                            Spacer(modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onCopy,
+                    modifier = Modifier.weight(1f).height(42.dp),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF70C7BA))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Copy Phrase", style = MaterialTheme.typography.labelMedium)
+                }
+
+                Button(
+                    onClick = onHide,
+                    modifier = Modifier.weight(1f).height(42.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surface, contentColor = MaterialTheme.colorScheme.onSurface)
+                ) {
+                    Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Hide Now", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -1622,6 +1993,7 @@ fun SettingsScreen(
     var bioSuccessMessage by remember { mutableStateOf<String?>(null) }
 
     var revealMnemonic by remember { mutableStateOf(false) }
+    var showSeedAuthDialog by remember { mutableStateOf(false) }
     var importText by remember { mutableStateOf("") }
     var importPassphrase by remember { mutableStateOf("") }
     var importError by remember { mutableStateOf<String?>(null) }
@@ -1953,64 +2325,86 @@ fun SettingsScreen(
                         // Seed & Keys Tab
                         Text("Vault Mnemonic & Recovery Phrase", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onBackground)
                         Spacer(modifier = Modifier.height(4.dp))
-                        Text("Your 12-word BIP-39 phrase encrypts your master vault and restores your Kaspa wallet keys. Store it offline securely.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Your 12-word BIP-39 phrase encrypts your master vault and restores your Kaspa wallet keys. Authentication is required to view it.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(modifier = Modifier.height(16.dp))
 
                         if (kaspaWallet != null) {
-                            Card(
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            if (revealMnemonic) "Secret 12-Word Recovery Phrase" else "••••••••••••••••••••••••",
-                                            style = MaterialTheme.typography.titleSmall,
-                                            fontWeight = FontWeight.Bold,
-                                            color = Color(0xFF70C7BA)
-                                        )
-                                        Row {
+                            if (revealMnemonic) {
+                                RevealedSeedPhraseCard(
+                                    mnemonic = kaspaWallet!!.mnemonic,
+                                    onHide = { revealMnemonic = false },
+                                    onCopy = {
+                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                        val clip = ClipData.newPlainText("Vault Seed", kaspaWallet!!.mnemonic)
+                                        clipboard.setPrimaryClip(clip)
+                                        Toast.makeText(context, "Recovery seed copied! Clear clipboard after use.", Toast.LENGTH_LONG).show()
+                                    }
+                                )
+                            } else {
+                                Card(
+                                    shape = RoundedCornerShape(16.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(16.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.Lock, contentDescription = null, tint = Color(0xFF70C7BA), modifier = Modifier.size(20.dp))
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(
+                                                    "••••••••••••••••••••••••",
+                                                    style = MaterialTheme.typography.titleSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFF70C7BA)
+                                                )
+                                            }
                                             IconButton(
-                                                onClick = { revealMnemonic = !revealMnemonic },
+                                                onClick = { showSeedAuthDialog = true },
                                                 modifier = Modifier.size(36.dp)
                                             ) {
                                                 Icon(
-                                                    if (revealMnemonic) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                                    contentDescription = "Toggle Visibility",
+                                                    Icons.Default.Visibility,
+                                                    contentDescription = "Unlock Seed Phrase",
                                                     modifier = Modifier.size(20.dp),
                                                     tint = Color(0xFF70C7BA)
                                                 )
                                             }
-                                            if (revealMnemonic) {
-                                                IconButton(
-                                                    onClick = {
-                                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                                        val clip = ClipData.newPlainText("Vault Seed", kaspaWallet!!.mnemonic)
-                                                        clipboard.setPrimaryClip(clip)
-                                                        Toast.makeText(context, "Mnemonic copied to clipboard", Toast.LENGTH_SHORT).show()
-                                                    },
-                                                    modifier = Modifier.size(36.dp)
-                                                ) {
-                                                    Icon(Icons.Outlined.ContentCopy, contentDescription = "Copy", modifier = Modifier.size(20.dp), tint = Color(0xFF70C7BA))
-                                                }
-                                            }
                                         }
-                                    }
-                                    if (revealMnemonic) {
                                         Spacer(modifier = Modifier.height(10.dp))
                                         Text(
-                                            kaspaWallet!!.mnemonic,
-                                            style = MaterialTheme.typography.bodyLarge,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = MaterialTheme.colorScheme.onBackground
+                                            "Seed phrase is locked and protected. Authenticate using your master password or device biometrics to reveal.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
+                                        Spacer(modifier = Modifier.height(12.dp))
+                                        Button(
+                                            onClick = { showSeedAuthDialog = true },
+                                            shape = RoundedCornerShape(10.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black),
+                                            modifier = Modifier.fillMaxWidth().height(44.dp)
+                                        ) {
+                                            Icon(Icons.Default.VpnKey, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("UNLOCK SEED PHRASE", fontWeight = FontWeight.Bold)
+                                        }
                                     }
                                 }
+                            }
+
+                            if (showSeedAuthDialog) {
+                                SeedPhraseAuthDialog(
+                                    viewModel = viewModel,
+                                    activity = activity,
+                                    onAuthenticated = {
+                                        showSeedAuthDialog = false
+                                        revealMnemonic = true
+                                    },
+                                    onDismiss = { showSeedAuthDialog = false }
+                                )
                             }
 
                             Spacer(modifier = Modifier.height(16.dp))
