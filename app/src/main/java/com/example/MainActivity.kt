@@ -1,9 +1,11 @@
 package com.example
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.provider.MediaStore
@@ -14,6 +16,9 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import java.io.File
 import androidx.compose.animation.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -646,6 +651,8 @@ fun VaultScreen(viewModel: VaultViewModel) {
     val context = LocalContext.current
     val activity = context as? FragmentActivity
     var selectedImageUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var tempCameraImageUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var showPhotoSourceDialog by remember { mutableStateOf(false) }
     var showImageUploadDialog by remember { mutableStateOf(false) }
     var imageUploadTitle by remember { mutableStateOf("") }
     var isEncryptingImage by remember { mutableStateOf(false) }
@@ -657,6 +664,51 @@ fun VaultScreen(viewModel: VaultViewModel) {
             selectedImageUri = uri
             imageUploadTitle = ""
             showImageUploadDialog = true
+        }
+    }
+
+    val takePictureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture(),
+        onResult = { success ->
+            if (success && tempCameraImageUri != null) {
+                onImageSelected(tempCameraImageUri)
+            }
+        }
+    )
+
+    val launchHardwareCamera: () -> Unit = {
+        try {
+            val cacheDir = File(context.cacheDir, "camera_photos")
+            if (!cacheDir.exists()) cacheDir.mkdirs()
+            val tempFile = File.createTempFile("kascrypt_cam_${System.currentTimeMillis()}", ".jpg", cacheDir)
+            val uri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                tempFile
+            )
+            tempCameraImageUri = uri
+            takePictureLauncher.launch(uri)
+        } catch (e: Exception) {
+            Toast.makeText(context, "Failed to launch hardware camera: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = { isGranted ->
+            if (isGranted) {
+                launchHardwareCamera()
+            } else {
+                Toast.makeText(context, "Camera permission is required to capture photos.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    )
+
+    val checkAndLaunchCamera: () -> Unit = {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            launchHardwareCamera()
+        } else {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
 
@@ -757,7 +809,7 @@ fun VaultScreen(viewModel: VaultViewModel) {
                         Icon(Icons.Default.AccountBalanceWallet, contentDescription = "Kaspa Wallet", tint = MaterialTheme.colorScheme.primary)
                     }
                     IconButton(onClick = { 
-                        launchSafeImagePicker()
+                        showPhotoSourceDialog = true
                     }, modifier = Modifier.testTag("img_btn")) {
                         Icon(Icons.Default.Image, contentDescription = "Upload Image")
                     }
@@ -1172,13 +1224,13 @@ fun VaultScreen(viewModel: VaultViewModel) {
                         OutlinedButton(
                             onClick = {
                                 showAddDialog = false
-                                launchSafeImagePicker()
+                                showPhotoSourceDialog = true
                             },
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                            Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Or Encrypt a Photo / Image")
+                            Text("Encrypt Photo (Camera or Gallery)")
                         }
                     }
                 },
@@ -1198,8 +1250,47 @@ fun VaultScreen(viewModel: VaultViewModel) {
             )
         }
 
+        // Photo Source Selection Dialog (Hardware Camera vs Gallery)
+        if (showPhotoSourceDialog) {
+            PhotoSourceDialog(
+                onDismiss = { showPhotoSourceDialog = false },
+                onSelectCamera = {
+                    showPhotoSourceDialog = false
+                    checkAndLaunchCamera()
+                },
+                onSelectGallery = {
+                    showPhotoSourceDialog = false
+                    launchSafeImagePicker()
+                }
+            )
+        }
+
         // Dedicated Image Upload and Encrypt Dialog
         if (showImageUploadDialog && selectedImageUri != null) {
+            var previewThumbBitmap by remember(selectedImageUri) { mutableStateOf<Bitmap?>(null) }
+            LaunchedEffect(selectedImageUri) {
+                if (selectedImageUri != null) {
+                    try {
+                        context.contentResolver.openInputStream(selectedImageUri!!)?.use { stream ->
+                            val fullBmp = android.graphics.BitmapFactory.decodeStream(stream)
+                            if (fullBmp != null) {
+                                val maxDim = 800
+                                val w = fullBmp.width
+                                val h = fullBmp.height
+                                if (w > maxDim || h > maxDim) {
+                                    val scale = maxDim.toFloat() / maxOf(w, h)
+                                    previewThumbBitmap = Bitmap.createScaledBitmap(fullBmp, (w * scale).toInt(), (h * scale).toInt(), true)
+                                } else {
+                                    previewThumbBitmap = fullBmp
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        // ignore preview decode failure
+                    }
+                }
+            }
+
             AlertDialog(
                 onDismissRequest = { 
                     if (!isEncryptingImage) {
@@ -1218,7 +1309,31 @@ fun VaultScreen(viewModel: VaultViewModel) {
                     }
                 },
                 text = {
-                    Column {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        if (previewThumbBitmap != null) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(160.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                                    .border(1.dp, Color(0xFF70C7BA).copy(alpha = 0.5f), RoundedCornerShape(12.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Image(
+                                    bitmap = previewThumbBitmap!!.asImageBitmap(),
+                                    contentDescription = "Photo Preview",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(12.dp))
+                        }
+
                         Text(
                             "This image will be encrypted on-device with XChaCha20-Poly1305 and signed with ML-DSA Post-Quantum cryptography.",
                             style = MaterialTheme.typography.bodySmall,
@@ -2583,3 +2698,101 @@ fun SettingsScreen(
         }
     }
 }
+
+@Composable
+fun PhotoSourceDialog(
+    onDismiss: () -> Unit,
+    onSelectCamera: () -> Unit,
+    onSelectGallery: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.background,
+        titleContentColor = MaterialTheme.colorScheme.primary,
+        textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(modifier = Modifier.width(10.dp))
+                Text("Add Encrypted Photo", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            }
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "Capture a photo using device hardware camera or choose an image from your device gallery/files. All images are zero-knowledge encrypted on-device.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Hardware Camera Option
+                Surface(
+                    onClick = onSelectCamera,
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF70C7BA).copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth().testTag("option_camera")
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(14.dp)
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF70C7BA).copy(alpha = 0.2f))
+                        ) {
+                            Icon(Icons.Default.CameraAlt, contentDescription = null, tint = Color(0xFF70C7BA), modifier = Modifier.size(22.dp))
+                        }
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column {
+                            Text("Take Hardware Photo", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+                            Text("Use device camera to snap and encrypt", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Gallery Option
+                Surface(
+                    onClick = onSelectGallery,
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
+                    modifier = Modifier.fillMaxWidth().testTag("option_gallery")
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(14.dp)
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
+                        ) {
+                            Icon(Icons.Default.Image, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                        }
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column {
+                            Text("Choose from Gallery / Files", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+                            Text("Pick existing photo or document", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    )
+}
+
