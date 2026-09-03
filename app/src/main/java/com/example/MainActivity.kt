@@ -676,7 +676,7 @@ fun VaultScreen(viewModel: VaultViewModel) {
         }
     )
 
-    val launchHardwareCamera: () -> Unit = {
+    val launchNativeCamera: () -> Unit = {
         try {
             val cacheDir = File(context.cacheDir, "camera_photos")
             if (!cacheDir.exists()) cacheDir.mkdirs()
@@ -689,7 +689,7 @@ fun VaultScreen(viewModel: VaultViewModel) {
             tempCameraImageUri = uri
             takePictureLauncher.launch(uri)
         } catch (e: Exception) {
-            Toast.makeText(context, "Failed to launch hardware camera: ${e.message}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Failed to open camera: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -697,7 +697,7 @@ fun VaultScreen(viewModel: VaultViewModel) {
         contract = ActivityResultContracts.RequestPermission(),
         onResult = { isGranted ->
             if (isGranted) {
-                launchHardwareCamera()
+                launchNativeCamera()
             } else {
                 Toast.makeText(context, "Camera permission is required to capture photos.", Toast.LENGTH_SHORT).show()
             }
@@ -706,7 +706,7 @@ fun VaultScreen(viewModel: VaultViewModel) {
 
     val checkAndLaunchCamera: () -> Unit = {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            launchHardwareCamera()
+            launchNativeCamera()
         } else {
             cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
@@ -722,6 +722,11 @@ fun VaultScreen(viewModel: VaultViewModel) {
         onResult = onImageSelected
     )
 
+    val openDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+        onResult = onImageSelected
+    )
+
     val activityResultLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult(),
         onResult = { result ->
@@ -732,23 +737,32 @@ fun VaultScreen(viewModel: VaultViewModel) {
 
     val launchSafeImagePicker: () -> Unit = {
         try {
-            pickVisualMediaLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            if (ActivityResultContracts.PickVisualMedia.isPhotoPickerAvailable(context)) {
+                pickVisualMediaLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            } else {
+                getContentLauncher.launch("image/*")
+            }
         } catch (e: Exception) {
             try {
                 getContentLauncher.launch("image/*")
             } catch (e2: Exception) {
                 try {
-                    val pickIntent = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
-                    activityResultLauncher.launch(pickIntent)
+                    openDocumentLauncher.launch(arrayOf("image/*"))
                 } catch (e3: Exception) {
                     try {
-                        val getImgIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                        val pickIntent = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI).apply {
                             type = "image/*"
-                            addCategory(Intent.CATEGORY_OPENABLE)
                         }
-                        activityResultLauncher.launch(Intent.createChooser(getImgIntent, "Select Image to Encrypt"))
+                        activityResultLauncher.launch(Intent.createChooser(pickIntent, "Select Image to Encrypt"))
                     } catch (e4: Exception) {
-                        Toast.makeText(context, "No gallery or photo picker app found on device.", Toast.LENGTH_LONG).show()
+                        try {
+                            val getImgIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                                type = "image/*"
+                            }
+                            activityResultLauncher.launch(Intent.createChooser(getImgIntent, "Select Image to Encrypt"))
+                        } catch (e5: Exception) {
+                            Toast.makeText(context, "Could not open image picker: ${e5.message}", Toast.LENGTH_LONG).show()
+                        }
                     }
                 }
             }
@@ -1250,7 +1264,7 @@ fun VaultScreen(viewModel: VaultViewModel) {
             )
         }
 
-        // Photo Source Selection Dialog (Hardware Camera vs Gallery)
+        // Photo Source Selection Dialog (Camera vs Gallery)
         if (showPhotoSourceDialog) {
             PhotoSourceDialog(
                 onDismiss = { showPhotoSourceDialog = false },
@@ -2720,13 +2734,13 @@ fun PhotoSourceDialog(
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    "Capture a photo using device hardware camera or choose an image from your device gallery/files. All images are zero-knowledge encrypted on-device.",
+                    "Take a photo with your device camera or choose an image from your device gallery/files. All images are zero-knowledge encrypted on-device.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Hardware Camera Option
+                // Camera Option
                 Surface(
                     onClick = onSelectCamera,
                     shape = RoundedCornerShape(14.dp),
@@ -2749,7 +2763,7 @@ fun PhotoSourceDialog(
                         }
                         Spacer(modifier = Modifier.width(14.dp))
                         Column {
-                            Text("Take Hardware Photo", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+                            Text("Take Photo", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
                             Text("Use device camera to snap and encrypt", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
