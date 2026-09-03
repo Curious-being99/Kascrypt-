@@ -248,6 +248,106 @@ object KfsEngine {
         }
     }
 
+    private fun computeKaspaTransactionSighash(
+        version: Int,
+        inputs: List<KaspaTransactionInput>,
+        outputs: List<KaspaTransactionOutput>,
+        lockTime: Long,
+        subnetworkIdHex: String,
+        gas: Long,
+        payloadHex: String,
+        inputIndex: Int,
+        utxoAmount: Long,
+        utxoScriptPubKeyHex: String,
+        sigHashType: Byte = 0x01
+    ): ByteArray {
+        val tag = "TransactionSigningHash"
+        val stream = ByteArrayOutputStream()
+
+        // 1. Transaction Version (2 bytes, LE)
+        stream.write(ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(version.toShort()).array())
+
+        // 2. Previous Outputs Hash (32 bytes)
+        val prevOutsStream = ByteArrayOutputStream()
+        for (input in inputs) {
+            val txIdBytes = CryptoManager.hexToBytes(input.previousOutpoint.transactionId ?: "")
+            prevOutsStream.write(txIdBytes)
+            val idxBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt((input.previousOutpoint.index ?: 0L).toInt()).array()
+            prevOutsStream.write(idxBytes)
+        }
+        val prevOutsHash = CryptoManager.hashBlake2bPersonalized(prevOutsStream.toByteArray(), tag)
+        stream.write(prevOutsHash)
+
+        // 3. Sequences Hash (32 bytes)
+        val seqStream = ByteArrayOutputStream()
+        for (input in inputs) {
+            val seqBytes = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(input.sequence).array()
+            seqStream.write(seqBytes)
+        }
+        val seqHash = CryptoManager.hashBlake2bPersonalized(seqStream.toByteArray(), tag)
+        stream.write(seqHash)
+
+        // 4. SigOpCounts Hash (32 bytes)
+        val sigOpStream = ByteArrayOutputStream()
+        for (input in inputs) {
+            sigOpStream.write(input.sigOpCount)
+        }
+        val sigOpHash = CryptoManager.hashBlake2bPersonalized(sigOpStream.toByteArray(), tag)
+        stream.write(sigOpHash)
+
+        // 5. Input Specific Outpoint (36 bytes)
+        val currentInput = inputs[inputIndex]
+        stream.write(CryptoManager.hexToBytes(currentInput.previousOutpoint.transactionId ?: ""))
+        stream.write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt((currentInput.previousOutpoint.index ?: 0L).toInt()).array())
+
+        // 6. ScriptPublicKey (2 bytes version + 8 bytes length + script bytes)
+        val scriptBytes = CryptoManager.hexToBytes(utxoScriptPubKeyHex)
+        stream.write(ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(0.toShort()).array())
+        stream.write(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(scriptBytes.size.toLong()).array())
+        stream.write(scriptBytes)
+
+        // 7. Value (8 bytes LE, amount in sompis)
+        stream.write(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(utxoAmount).array())
+
+        // 8. Input Sequence (8 bytes LE)
+        stream.write(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(currentInput.sequence).array())
+
+        // 9. Input SigOpCount (1 byte)
+        stream.write(currentInput.sigOpCount)
+
+        // 10. Outputs Hash (32 bytes)
+        val outputsStream = ByteArrayOutputStream()
+        for (output in outputs) {
+            outputsStream.write(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(output.amount).array())
+            val outScriptBytes = CryptoManager.hexToBytes(output.scriptPublicKey.scriptPublicKey)
+            outputsStream.write(ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(output.scriptPublicKey.version.toShort()).array())
+            outputsStream.write(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(outScriptBytes.size.toLong()).array())
+            outputsStream.write(outScriptBytes)
+        }
+        val outputsHash = CryptoManager.hashBlake2bPersonalized(outputsStream.toByteArray(), tag)
+        stream.write(outputsHash)
+
+        // 11. LockTime (8 bytes LE)
+        stream.write(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(lockTime).array())
+
+        // 12. SubnetworkId (20 bytes)
+        val subnetworkBytes = if (subnetworkIdHex.length == 40) CryptoManager.hexToBytes(subnetworkIdHex) else ByteArray(20)
+        stream.write(subnetworkBytes)
+
+        // 13. Gas (8 bytes LE)
+        stream.write(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(gas).array())
+
+        // 14. Payload Hash (32 bytes)
+        val payloadBytes = if (!payloadHex.isNullOrEmpty()) CryptoManager.hexToBytes(payloadHex) else ByteArray(0)
+        val payloadHash = CryptoManager.hashBlake2bPersonalized(payloadBytes, tag)
+        stream.write(payloadHash)
+
+        // 15. SigHashType (1 byte)
+        stream.write(sigHashType.toInt())
+
+        return CryptoManager.hashBlake2bPersonalized(stream.toByteArray(), tag)
+    }
+
     private fun buildKaspaTransaction(
         payloadHex: String,
         wallet: com.example.crypto.KaspaWalletManager.KaspaWallet?,
@@ -266,42 +366,24 @@ object KfsEngine {
         val inputAmount = selectedUtxo.utxoEntry?.amount ?: 0L
         val changeAmount = (inputAmount - feeSompis).coerceAtLeast(0L)
         val utxoScriptPubKey = selectedUtxo.utxoEntry?.scriptPublicKey
+        val scriptPubKeyStr = if (!utxoScriptPubKey?.scriptPublicKey.isNullOrBlank()) {
+            utxoScriptPubKey!!.scriptPublicKey
+        } else {
+            "20" + wallet.publicKeyHex + "ac"
+        }
         val scriptPubKey = KaspaScriptPublicKey(
-            scriptPublicKey = if (!utxoScriptPubKey?.scriptPublicKey.isNullOrBlank()) {
-                utxoScriptPubKey!!.scriptPublicKey
-            } else {
-                "20" + wallet.publicKeyHex + "ac"
-            },
+            scriptPublicKey = scriptPubKeyStr,
             version = utxoScriptPubKey?.version ?: 0
         )
 
-        val md = MessageDigest.getInstance("SHA-256")
-        val prevTxId = selectedUtxo.outpoint.transactionId
-        if (prevTxId.length == 64) {
-            md.update(CryptoManager.hexToBytes(prevTxId))
-        }
-        val outIdx = selectedUtxo.outpoint.index ?: 0L
-        md.update(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(outIdx).array())
-        if (!payloadHex.isNullOrEmpty()) {
-            md.update(CryptoManager.hexToBytes(payloadHex))
-        }
-        val sighash = md.digest()
-
-        val schnorrSig = com.example.crypto.KaspaWalletManager.signSchnorr(sighash, wallet.privateKeyHex)
-        val schnorrSigHex = CryptoManager.bytesToHex(schnorrSig)
-        // Kaspa P2PK opcode 0x41 (65 bytes) + 64-byte Schnorr signature + 0x01 (SIGHASH_ALL)
-        val signatureScript = "41" + schnorrSigHex + "01"
-
-        val inputs = listOf(
-            KaspaTransactionInput(
-                previousOutpoint = KaspaOutpoint(
-                    transactionId = selectedUtxo.outpoint.transactionId,
-                    index = selectedUtxo.outpoint.index ?: 0L
-                ),
-                signatureScript = signatureScript,
-                sequence = 0L,
-                sigOpCount = 1
-            )
+        val initialInput = KaspaTransactionInput(
+            previousOutpoint = KaspaOutpoint(
+                transactionId = selectedUtxo.outpoint.transactionId,
+                index = selectedUtxo.outpoint.index ?: 0L
+            ),
+            signatureScript = "",
+            sequence = 0L,
+            sigOpCount = 1
         )
 
         val outputs = if (changeAmount > 0) {
@@ -315,9 +397,30 @@ object KfsEngine {
             emptyList()
         }
 
+        val sighash = computeKaspaTransactionSighash(
+            version = 0,
+            inputs = listOf(initialInput),
+            outputs = outputs,
+            lockTime = 0L,
+            subnetworkIdHex = "0000000000000000000000000000000000000000",
+            gas = 0L,
+            payloadHex = payloadHex,
+            inputIndex = 0,
+            utxoAmount = inputAmount,
+            utxoScriptPubKeyHex = scriptPubKeyStr,
+            sigHashType = 0x01
+        )
+
+        val schnorrSig = com.example.crypto.KaspaWalletManager.signSchnorr(sighash, wallet.privateKeyHex)
+        val schnorrSigHex = CryptoManager.bytesToHex(schnorrSig)
+        // Kaspa P2PK opcode 0x41 (65 bytes) + 64-byte Schnorr signature + 0x01 (SIGHASH_ALL)
+        val signatureScript = "41" + schnorrSigHex + "01"
+
+        val signedInput = initialInput.copy(signatureScript = signatureScript)
+
         return KaspaTransaction(
             version = 0,
-            inputs = inputs,
+            inputs = listOf(signedInput),
             outputs = outputs,
             lockTime = 0L,
             subnetworkId = "0000000000000000000000000000000000000000",

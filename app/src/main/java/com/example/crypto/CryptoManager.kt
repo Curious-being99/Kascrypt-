@@ -62,6 +62,15 @@ object CryptoManager {
         return result
     }
 
+    fun hashBlake2bPersonalized(data: ByteArray, personalizationTag: String = "TransactionSigningHash"): ByteArray {
+        val persBytes = personalizationTag.toByteArray(Charsets.UTF_8)
+        val digest = Blake2bDigest(null, 32, null, persBytes)
+        digest.update(data, 0, data.size)
+        val result = ByteArray(32)
+        digest.doFinal(result, 0)
+        return result
+    }
+
     // Compute complete Blake2b Merkle Tree Root for a list of chunk hashes
     fun computeMerkleRoot(chunkHashes: List<ByteArray>): ByteArray {
         if (chunkHashes.isEmpty()) return hashBlake2b(ByteArray(0))
