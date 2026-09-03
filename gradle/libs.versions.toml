@@ -44,6 +44,7 @@ googleid = "1.1.1"
 bouncycastle = "1.78.1"
 tink = "1.15.0"
 biometric = "1.2.0-alpha05"
+fragment = "1.8.6"
 
 
 [libraries]
@@ -105,6 +106,7 @@ bouncycastle-prov = { group = "org.bouncycastle", name = "bcprov-jdk18on", versi
 bouncycastle-pkix = { group = "org.bouncycastle", name = "bcpkix-jdk18on", version.ref = "bouncycastle" }
 tink-android = { group = "com.google.crypto.tink", name = "tink-android", version.ref = "tink" }
 androidx-biometric = { group = "androidx.biometric", name = "biometric", version.ref = "biometric" }
+androidx-fragment-ktx = { group = "androidx.fragment", name = "fragment-ktx", version.ref = "fragment" }
 
 
 [plugins]
