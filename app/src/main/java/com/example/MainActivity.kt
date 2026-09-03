@@ -3054,7 +3054,7 @@ fun SettingsScreen(
                                 )
                                 Spacer(modifier = Modifier.height(14.dp))
                                 OutlinedButton(
-                                    onClick = { restoreBackupLauncher.launch(arrayOf("*/*")) },
+                                    onClick = { restoreBackupLauncher.launch(arrayOf("*/*", "application/octet-stream", "application/json", "text/plain")) },
                                     shape = RoundedCornerShape(12.dp),
                                     modifier = Modifier.fillMaxWidth().height(48.dp)
                                 ) {

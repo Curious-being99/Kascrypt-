@@ -981,34 +981,84 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val jsonString = context.contentResolver.openInputStream(inputUri)?.use { stream ->
-                    stream.bufferedReader(Charsets.UTF_8).readText()
-                } ?: throw IllegalArgumentException("Could not read selected file")
+                val rawBytes = context.contentResolver.openInputStream(inputUri)?.use { stream ->
+                    stream.readBytes()
+                } ?: throw IllegalArgumentException("Could not read selected file from storage")
 
-                val archive = backupArchiveAdapter.fromJson(jsonString)
-                    ?: throw IllegalArgumentException("Invalid backup file format")
+                val rawText = String(rawBytes, Charsets.UTF_8)
+                val cleanJson = rawText.trim().removePrefix("\uFEFF").trim()
 
-                val encryptedBytes = android.util.Base64.decode(archive.encryptedPayloadBase64, android.util.Base64.NO_WRAP)
-                
-                // Decrypt with current derived key
-                val decryptedBytes = try {
-                    CryptoManager.decryptXChaCha20Poly1305(encryptedBytes, key)
+                var payload: VaultBackupPayload? = null
+
+                // 1. Try parsing as EncryptedVaultBackupArchive (.kascrypt)
+                val archive = try {
+                    backupArchiveAdapter.fromJson(cleanJson)
                 } catch (e: Exception) {
-                    throw IllegalStateException("Decryption failed: Master password/key mismatch for this backup archive.")
+                    null
                 }
 
-                val payloadJson = String(decryptedBytes, Charsets.UTF_8)
-                val payload = backupPayloadAdapter.fromJson(payloadJson)
-                    ?: throw IllegalArgumentException("Failed to parse vault payload data")
+                if (archive != null && !archive.encryptedPayloadBase64.isNullOrBlank()) {
+                    val encryptedBytes = try {
+                        android.util.Base64.decode(archive.encryptedPayloadBase64, android.util.Base64.NO_WRAP)
+                    } catch (e: Exception) {
+                        android.util.Base64.decode(archive.encryptedPayloadBase64, android.util.Base64.DEFAULT)
+                    }
+
+                    val decryptedBytes = try {
+                        CryptoManager.decryptXChaCha20Poly1305(encryptedBytes, key)
+                    } catch (e: Exception) {
+                        throw IllegalStateException("Decryption failed: Key mismatch. Ensure you are logged into the same vault account/password used to create this backup.")
+                    }
+
+                    val payloadJson = String(decryptedBytes, Charsets.UTF_8)
+                    payload = try {
+                        backupPayloadAdapter.fromJson(payloadJson)
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+
+                // 2. Fallback: Try parsing directly as VaultBackupPayload (unencrypted JSON)
+                if (payload == null) {
+                    payload = try {
+                        backupPayloadAdapter.fromJson(cleanJson)
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+
+                // 3. Fallback: Try parsing as List<VaultItem> (raw list of items)
+                if (payload == null) {
+                    try {
+                        val listType = com.squareup.moshi.Types.newParameterizedType(List::class.java, VaultItem::class.java)
+                        val listAdapter = moshi.adapter<List<VaultItem>>(listType)
+                        val itemsList = listAdapter.fromJson(cleanJson)
+                        if (!itemsList.isNullOrEmpty()) {
+                            payload = VaultBackupPayload(items = itemsList, imageAssets = emptyMap())
+                        }
+                    } catch (e: Exception) {
+                        // ignore
+                    }
+                }
+
+                if (payload == null) {
+                    throw IllegalArgumentException("Invalid or unrecognized backup file format")
+                }
 
                 var restoredImages = 0
                 for ((filename, b64Data) in payload.imageAssets) {
                     try {
-                        val sanitizedName = File(filename).name
-                        val imgFile = File(context.filesDir, sanitizedName)
-                        val data = android.util.Base64.decode(b64Data, android.util.Base64.NO_WRAP)
-                        imgFile.writeBytes(data)
-                        restoredImages++
+                        if (b64Data.isNotBlank()) {
+                            val sanitizedName = File(filename).name
+                            val imgFile = File(context.filesDir, sanitizedName)
+                            val data = try {
+                                android.util.Base64.decode(b64Data, android.util.Base64.NO_WRAP)
+                            } catch (e: Exception) {
+                                android.util.Base64.decode(b64Data, android.util.Base64.DEFAULT)
+                            }
+                            imgFile.writeBytes(data)
+                            restoredImages++
+                        }
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }
@@ -1016,12 +1066,14 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
 
                 var restoredItems = 0
                 for (item in payload.items) {
-                    val itemJson = vaultItemAdapter.toJson(item)
+                    val itemId = if (item.id.isBlank()) java.util.UUID.randomUUID().toString() else item.id
+                    val itemToSave = item.copy(id = itemId)
+                    val itemJson = vaultItemAdapter.toJson(itemToSave)
                     val plaintext = itemJson.toByteArray(Charsets.UTF_8)
                     val ciphertext = CryptoManager.encryptXChaCha20Poly1305(plaintext, key)
                     val signature = CryptoManager.sign(ciphertext, priv)
                     val entity = VaultEntryEntity(
-                        id = item.id,
+                        id = itemId,
                         ciphertext = ciphertext,
                         signature = signature
                     )
