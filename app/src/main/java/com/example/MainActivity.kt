@@ -642,12 +642,18 @@ fun VaultScreen(viewModel: VaultViewModel) {
         var isSearching by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
+    var selectedImageUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var showImageUploadDialog by remember { mutableStateOf(false) }
+    var imageUploadTitle by remember { mutableStateOf("") }
+    var isEncryptingImage by remember { mutableStateOf(false) }
+
     val imagePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia(),
+        contract = ActivityResultContracts.GetContent(),
         onResult = { uri ->
             if (uri != null) {
-                viewModel.addImageEntry(context, uri, "Secure Image Asset")
-                Toast.makeText(context, "Image encrypted with XChaCha20-Poly1305 and stored!", Toast.LENGTH_SHORT).show()
+                selectedImageUri = uri
+                imageUploadTitle = ""
+                showImageUploadDialog = true
             }
         }
     )
@@ -706,7 +712,7 @@ fun VaultScreen(viewModel: VaultViewModel) {
                         Icon(Icons.Default.AccountBalanceWallet, contentDescription = "Kaspa Wallet", tint = MaterialTheme.colorScheme.primary)
                     }
                     IconButton(onClick = { 
-                        imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        imagePickerLauncher.launch("image/*")
                     }, modifier = Modifier.testTag("img_btn")) {
                         Icon(Icons.Default.Image, contentDescription = "Upload Image")
                     }
@@ -1116,6 +1122,19 @@ fun VaultScreen(viewModel: VaultViewModel) {
                             Spacer(modifier = Modifier.height(6.dp))
                             PasswordStrengthView(password = content)
                         }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        OutlinedButton(
+                            onClick = {
+                                showAddDialog = false
+                                imagePickerLauncher.launch("image/*")
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Or Encrypt a Photo / Image")
+                        }
                     }
                 },
                 confirmButton = {
@@ -1130,6 +1149,102 @@ fun VaultScreen(viewModel: VaultViewModel) {
                 },
                 dismissButton = {
                     TextButton(onClick = { showAddDialog = false }) { Text("Cancel", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                }
+            )
+        }
+
+        // Dedicated Image Upload and Encrypt Dialog
+        if (showImageUploadDialog && selectedImageUri != null) {
+            AlertDialog(
+                onDismissRequest = { 
+                    if (!isEncryptingImage) {
+                        showImageUploadDialog = false
+                        selectedImageUri = null
+                    }
+                },
+                containerColor = MaterialTheme.colorScheme.background,
+                titleContentColor = MaterialTheme.colorScheme.primary,
+                textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                title = { 
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Encrypt Photo / Image")
+                    }
+                },
+                text = {
+                    Column {
+                        Text(
+                            "This image will be encrypted on-device with XChaCha20-Poly1305 and signed with ML-DSA Post-Quantum cryptography.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
+                        OutlinedTextField(
+                            value = imageUploadTitle,
+                            onValueChange = { imageUploadTitle = it },
+                            label = { Text("Image Title / Label (Optional)") },
+                            placeholder = { Text("e.g. ID Document, Secret Photo") },
+                            shape = RoundedCornerShape(12.dp),
+                            singleLine = true,
+                            enabled = !isEncryptingImage,
+                            modifier = Modifier.fillMaxWidth().testTag("image_upload_title")
+                        )
+                        if (isEncryptingImage) {
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(24.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text("Encrypting & signing asset...", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val uri = selectedImageUri ?: return@Button
+                            isEncryptingImage = true
+                            val finalTitle = if (imageUploadTitle.isBlank()) "Secured Image Asset" else imageUploadTitle.trim()
+                            viewModel.addImageEntry(
+                                context = context,
+                                uri = uri,
+                                title = finalTitle,
+                                onSuccess = {
+                                    isEncryptingImage = false
+                                    showImageUploadDialog = false
+                                    selectedImageUri = null
+                                    Toast.makeText(context, "Image encrypted with XChaCha20-Poly1305 and stored!", Toast.LENGTH_SHORT).show()
+                                },
+                                onError = { errorMsg ->
+                                    isEncryptingImage = false
+                                    Toast.makeText(context, "Error: $errorMsg", Toast.LENGTH_LONG).show()
+                                }
+                            )
+                        },
+                        enabled = !isEncryptingImage,
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) {
+                        Text("Encrypt & Save")
+                    }
+                },
+                dismissButton = {
+                    if (!isEncryptingImage) {
+                        TextButton(onClick = { 
+                            showImageUploadDialog = false
+                            selectedImageUri = null
+                        }) {
+                            Text("Cancel", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
                 }
             )
         }

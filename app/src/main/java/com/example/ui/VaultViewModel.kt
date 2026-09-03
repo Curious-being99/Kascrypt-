@@ -203,21 +203,39 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun getDecryptedBitmap(context: Context, imagePath: String): Bitmap? {
-        val key = derivedKey ?: return null
-        return try {
+    suspend fun getDecryptedBitmap(context: Context, imagePath: String): Bitmap? = withContext(Dispatchers.IO) {
+        val key = derivedKey ?: return@withContext null
+        try {
             // Path traversal prevention: sanitize filename
             val sanitizedName = File(imagePath).name
             val file = File(context.filesDir, sanitizedName)
-            if (!file.canonicalPath.startsWith(context.filesDir.canonicalPath)) return null
-            if (!file.exists()) return null
+            if (!file.canonicalPath.startsWith(context.filesDir.canonicalPath)) return@withContext null
+            if (!file.exists()) return@withContext null
             
             val ciphertext = file.readBytes()
             val plaintext = CryptoManager.decryptXChaCha20Poly1305(ciphertext, key)
-            val bitmap = BitmapFactory.decodeByteArray(plaintext, 0, plaintext.size)
+            
+            // Safe decoding with bounds checking to prevent OOM
+            val boundsOptions = BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
+            BitmapFactory.decodeByteArray(plaintext, 0, plaintext.size, boundsOptions)
+            
+            var sampleSize = 1
+            val maxDimension = 1920
+            while (boundsOptions.outWidth / sampleSize > maxDimension || boundsOptions.outHeight / sampleSize > maxDimension) {
+                sampleSize *= 2
+            }
+            
+            val decodeOptions = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            val bitmap = BitmapFactory.decodeByteArray(plaintext, 0, plaintext.size, decodeOptions)
             plaintext.fill(0) // Zeroize decrypted plaintext memory
             bitmap
-        } catch (e: Exception) {
+        } catch (t: Throwable) {
+            t.printStackTrace()
             null
         }
     }
@@ -664,11 +682,23 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun addImageEntry(context: Context, uri: android.net.Uri, title: String) {
-        val key = derivedKey ?: return
-        val priv = privateKey ?: return
+    fun addImageEntry(
+        context: Context, 
+        uri: android.net.Uri, 
+        title: String,
+        onSuccess: (() -> Unit)? = null,
+        onError: ((String) -> Unit)? = null
+    ) {
+        val key = derivedKey ?: run {
+            onError?.invoke("Vault is locked. Please unlock first.")
+            return
+        }
+        val priv = privateKey ?: run {
+            onError?.invoke("Vault keys not initialized.")
+            return
+        }
         
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             try {
                 // Safeguard against unbounded memory consumption (limit raw ingestion to 25MB)
                 val rawBytes = context.contentResolver.openInputStream(uri)?.use { stream ->
@@ -684,7 +714,19 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                         buffer.write(data, 0, n)
                     }
                     buffer.toByteArray()
-                } ?: return@launch
+                } ?: run {
+                    withContext(Dispatchers.Main) {
+                        onError?.invoke("Could not open selected image")
+                    }
+                    return@launch
+                }
+                
+                if (rawBytes.isEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        onError?.invoke("Selected image is empty")
+                    }
+                    return@launch
+                }
                 
                 val id = UUID.randomUUID().toString()
                 val filename = "enc_img_$id.dat"
@@ -719,8 +761,14 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                 db.vaultDao().insertEntry(entity)
                 loadItems()
                 resetAutoLockTimer()
+                withContext(Dispatchers.Main) {
+                    onSuccess?.invoke()
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    onError?.invoke(e.localizedMessage ?: "Failed to encrypt image")
+                }
             }
         }
     }
