@@ -196,10 +196,32 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
             val vaultJson = vaultItemListAdapter.toJson(currentItems)
             val vaultBytes = vaultJson.toByteArray(Charsets.UTF_8)
             
+            // Refresh wallet balance and UTXOs in real-time first
+            val currentWallet = _kaspaWallet.value
+            var utxoList = _kaspaWalletUtxos.value
+            if (currentWallet != null) {
+                try {
+                    val balanceResp = KaspaNetwork.api.getAddressBalance(currentWallet.address)
+                    val freshUtxos = KaspaNetwork.api.getAddressUtxos(currentWallet.address)
+                    val sompis = balanceResp.balance ?: 0L
+                    _kaspaWalletSompis.value = sompis
+                    _kaspaWalletBalance.value = sompis.toDouble() / 100_000_000.0
+                    _kaspaWalletUtxos.value = freshUtxos
+                    utxoList = freshUtxos
+                } catch (e: Exception) {
+                    // fallback to cached utxos
+                }
+            }
+
             // Real XChaCha20-Poly1305 encryption of complete backup archive
             val ciphertext = CryptoManager.encryptXChaCha20Poly1305(vaultBytes, key)
             
-            KfsEngine.uploadToKaspa(ciphertext, UUID.randomUUID().toString())
+            KfsEngine.uploadToKaspa(
+                data = ciphertext,
+                fileId = UUID.randomUUID().toString(),
+                wallet = currentWallet,
+                utxos = utxoList
+            )
         }
     }
 

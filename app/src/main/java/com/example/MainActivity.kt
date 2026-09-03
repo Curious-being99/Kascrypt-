@@ -1425,56 +1425,185 @@ fun VaultScreen(viewModel: VaultViewModel) {
 
         // Kaspa BlockDAG & KFS Dialog
         if (showSyncDialog) {
+            LaunchedEffect(showSyncDialog) {
+                viewModel.refreshKaspaWalletBalance()
+            }
+
+            val isKfsError = kfsLastResult?.success == false || 
+                (kfsStatus.contains("error", ignoreCase = true) || 
+                 kfsStatus.contains("failed", ignoreCase = true) || 
+                 kfsStatus.contains("rejected", ignoreCase = true))
+
             AlertDialog(
                 onDismissRequest = { showSyncDialog = false },
                 containerColor = MaterialTheme.colorScheme.background,
-                titleContentColor = MaterialTheme.colorScheme.primary,
+                titleContentColor = if (isKfsError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
                 textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                 title = { 
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.CloudUpload, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Icon(
+                            imageVector = if (isKfsError) Icons.Default.Warning else Icons.Default.CloudUpload,
+                            contentDescription = null,
+                            tint = if (isKfsError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                        )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Kaspa Storage Sync (KFS)")
+                        Text(
+                            "Kaspa Storage Sync (KFS)",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isKfsError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onBackground
+                        )
                     }
                 },
                 text = {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        if (kfsProgress != null) {
-                            Text(kfsStatus, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        if (kfsProgress != null && kfsProgress!! < 1.0f) {
+                            Text(
+                                kfsStatus,
+                                color = if (isKfsError) Color(0xFFFF5252) else MaterialTheme.colorScheme.primary,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
                             Spacer(modifier = Modifier.height(6.dp))
                             LinearProgressIndicator(
                                 progress = { kfsProgress ?: 0f },
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier.fillMaxWidth(),
+                                color = if (isKfsError) Color(0xFFFF5252) else MaterialTheme.colorScheme.primary
                             )
                             Spacer(modifier = Modifier.height(10.dp))
                         } else {
                             Button(
                                 onClick = { viewModel.broadcastVaultToKaspa() },
                                 modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(12.dp)
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isKfsError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                                    contentColor = if (isKfsError) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary
+                                )
                             ) {
                                 Icon(Icons.Default.CloudUpload, contentDescription = null)
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text("Broadcast Vault to Kaspa (KFS)")
+                                Text("Broadcast Vault to Kaspa (KFS)", fontWeight = FontWeight.Bold)
                             }
                         }
 
                         if (kfsLastResult != null) {
                             val result = kfsLastResult!!
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            if (!result.success) {
+                                // Red Error Box for Live Node Rejection / Failure
+                                Card(
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)),
+                                    border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFFFF5252)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(12.dp)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(Icons.Default.Cancel, contentDescription = "Error", tint = Color(0xFFFF5252), modifier = Modifier.size(18.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                "Live Node Broadcast Rejected",
+                                                fontWeight = FontWeight.Bold,
+                                                style = MaterialTheme.typography.labelLarge,
+                                                color = Color(0xFFFF5252)
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            "The remote Kaspa node rejected the payload transaction. On-chain broadcasts require confirmed UTXOs to cover network fees.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onErrorContainer
+                                        )
+                                        if (result.errorMessage != null) {
+                                            Spacer(modifier = Modifier.height(6.dp))
+                                            Text(
+                                                "Node Error: ${result.errorMessage}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFFFF5252)
+                                            )
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Green / Success Box
+                                Card(
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF70C7BA).copy(alpha = 0.15f)),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF70C7BA)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(12.dp)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(Icons.Default.CheckCircle, contentDescription = "Success", tint = Color(0xFF70C7BA), modifier = Modifier.size(18.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Broadcast Confirmed on Node", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge, color = Color(0xFF70C7BA))
+                                        }
+                                    }
+                                }
+                            }
+
                             Spacer(modifier = Modifier.height(10.dp))
+
                             Card(
                                 shape = RoundedCornerShape(12.dp),
                                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Column(modifier = Modifier.padding(10.dp)) {
-                                    Text("Last KFS Execution:", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                                    Text("Merkle Root: ${result.manifest.merkleRoot}", style = MaterialTheme.typography.labelSmall)
-                                    Text("Total Chunks: ${result.manifest.totalChunks} | Payload: ${result.manifest.totalBytes} bytes", style = MaterialTheme.typography.labelSmall)
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text(
+                                        "KFS Merkle Tree:",
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = if (!result.success) Color(0xFFFF5252) else MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text("Root: ${result.manifest.merkleRoot}", style = MaterialTheme.typography.labelSmall)
+                                    Text("Chunks: ${result.manifest.totalChunks} | Size: ${result.manifest.totalBytes} bytes", style = MaterialTheme.typography.labelSmall)
+
                                     if (result.logs.isNotEmpty()) {
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Text(
+                                            "Live Execution Logs (${result.logs.size} events):",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
                                         Spacer(modifier = Modifier.height(4.dp))
-                                        Text("Execution logs (${result.logs.size} steps):", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
-                                        Text(result.logs.takeLast(4).joinToString("\n"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                            for (logLine in result.logs) {
+                                                val isLineError = logLine.contains("400", ignoreCase = true) ||
+                                                        logLine.contains("500", ignoreCase = true) ||
+                                                        logLine.contains("error", ignoreCase = true) ||
+                                                        logLine.contains("rejected", ignoreCase = true) ||
+                                                        logLine.contains("failed", ignoreCase = true) ||
+                                                        logLine.contains("notice", ignoreCase = true) ||
+                                                        logLine.contains("exception", ignoreCase = true) ||
+                                                        logLine.contains("no inputs", ignoreCase = true)
+
+                                                Row(verticalAlignment = Alignment.Top) {
+                                                    Text(
+                                                        text = if (isLineError) "✖ " else "• ",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = if (isLineError) Color(0xFFFF5252) else Color(0xFF70C7BA),
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                    Text(
+                                                        text = logLine,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontSize = 11.sp,
+                                                        fontWeight = if (isLineError) FontWeight.SemiBold else FontWeight.Normal,
+                                                        color = if (isLineError) Color(0xFFFF5252) else MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1483,7 +1612,11 @@ fun VaultScreen(viewModel: VaultViewModel) {
                 },
                 confirmButton = {
                     TextButton(onClick = { showSyncDialog = false }) {
-                        Text("Close", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                        Text(
+                            "Close",
+                            color = if (isKfsError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             )
@@ -2619,16 +2752,24 @@ fun SettingsScreen(
                         Text("Real-time node connection telemetry, DAG difficulty, and block height.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(modifier = Modifier.height(16.dp))
 
+                        val isNetworkError = networkStatus.contains("Error", ignoreCase = true) ||
+                                networkStatus.contains("Failed", ignoreCase = true) ||
+                                networkStatus.contains("Exception", ignoreCase = true) ||
+                                networkStatus.contains("Unreachable", ignoreCase = true)
+
                         Card(
                             shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isNetworkError) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f) else MaterialTheme.colorScheme.surfaceVariant
+                            ),
+                            border = if (isNetworkError) androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFF5252)) else null,
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(
                                 text = networkStatus,
                                 style = MaterialTheme.typography.bodyMedium,
                                 modifier = Modifier.padding(16.dp),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = if (isNetworkError) Color(0xFFFF5252) else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         Spacer(modifier = Modifier.height(16.dp))
@@ -2671,13 +2812,24 @@ fun SettingsScreen(
                             Text("Query Address Balance & UTXOs")
                         }
                         if (addressResult != null) {
+                            val isAddrErr = addressResult!!.contains("Error", ignoreCase = true) ||
+                                    addressResult!!.contains("Failed", ignoreCase = true) ||
+                                    addressResult!!.contains("Invalid", ignoreCase = true)
                             Spacer(modifier = Modifier.height(12.dp))
                             Card(
                                 shape = RoundedCornerShape(14.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (isAddrErr) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f) else MaterialTheme.colorScheme.surfaceVariant
+                                ),
+                                border = if (isAddrErr) androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFF5252)) else null,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text(addressResult!!, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(14.dp))
+                                Text(
+                                    addressResult!!,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (isAddrErr) Color(0xFFFF5252) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(14.dp)
+                                )
                             }
                         }
                         Spacer(modifier = Modifier.height(20.dp))
@@ -2697,13 +2849,24 @@ fun SettingsScreen(
                             Text("Query Transaction Status")
                         }
                         if (txResult != null) {
+                            val isTxErr = txResult!!.contains("Error", ignoreCase = true) ||
+                                    txResult!!.contains("Failed", ignoreCase = true) ||
+                                    txResult!!.contains("Not found", ignoreCase = true)
                             Spacer(modifier = Modifier.height(12.dp))
                             Card(
                                 shape = RoundedCornerShape(14.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (isTxErr) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f) else MaterialTheme.colorScheme.surfaceVariant
+                                ),
+                                border = if (isTxErr) androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFF5252)) else null,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text(txResult!!, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(14.dp))
+                                Text(
+                                    txResult!!,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (isTxErr) Color(0xFFFF5252) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(14.dp)
+                                )
                             }
                         }
                     }

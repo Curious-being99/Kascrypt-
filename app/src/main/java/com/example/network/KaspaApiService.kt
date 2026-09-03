@@ -59,14 +59,29 @@ data class KaspaScriptPublicKey(
 )
 
 @JsonClass(generateAdapter = true)
+data class KaspaTransactionInput(
+    val previousOutpoint: KaspaOutpoint,
+    val signatureScript: String = "",
+    val sequence: Long = 0,
+    val sigOpCount: Int = 1
+)
+
+@JsonClass(generateAdapter = true)
+data class KaspaTransactionOutput(
+    val amount: Long,
+    val scriptPublicKey: KaspaScriptPublicKey
+)
+
+@JsonClass(generateAdapter = true)
 data class KaspaTransaction(
     val version: Int = 0,
-    val inputs: List<Any> = emptyList(),
-    val outputs: List<Any> = emptyList(),
+    val inputs: List<KaspaTransactionInput> = emptyList(),
+    val outputs: List<KaspaTransactionOutput> = emptyList(),
     val lockTime: Long = 0,
     val subnetworkId: String = "0000000000000000000000000000000000000000",
     val gas: Long = 0,
-    val payload: String = ""
+    val payload: String = "",
+    val mass: Long = 0
 )
 
 @JsonClass(generateAdapter = true)
