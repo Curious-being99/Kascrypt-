@@ -262,9 +262,14 @@ object KfsEngine {
 
         val inputAmount = selectedUtxo.utxoEntry?.amount ?: 0L
         val changeAmount = (inputAmount - feeSompis).coerceAtLeast(0L)
-        val scriptPubKey = selectedUtxo.utxoEntry?.scriptPublicKey ?: KaspaScriptPublicKey(
-            scriptPublicKey = "20" + wallet.publicKeyHex + "ac",
-            version = 0
+        val utxoScriptPubKey = selectedUtxo.utxoEntry?.scriptPublicKey
+        val scriptPubKey = KaspaScriptPublicKey(
+            scriptPublicKey = if (!utxoScriptPubKey?.scriptPublicKey.isNullOrBlank()) {
+                utxoScriptPubKey!!.scriptPublicKey
+            } else {
+                "20" + wallet.publicKeyHex + "ac"
+            },
+            version = utxoScriptPubKey?.version ?: 0
         )
 
         val inputs = listOf(

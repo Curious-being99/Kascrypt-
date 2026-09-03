@@ -54,8 +54,8 @@ data class KaspaUtxoDetail(
 
 @JsonClass(generateAdapter = true)
 data class KaspaScriptPublicKey(
-    val scriptPublicKey: String? = null,
-    val version: Int? = null
+    val scriptPublicKey: String = "",
+    val version: Int = 0
 )
 
 @JsonClass(generateAdapter = true)
@@ -68,8 +68,8 @@ data class KaspaTransactionInput(
 
 @JsonClass(generateAdapter = true)
 data class KaspaTransactionOutput(
-    val amount: Long,
-    val scriptPublicKey: KaspaScriptPublicKey
+    val amount: Long = 0,
+    val scriptPublicKey: KaspaScriptPublicKey = KaspaScriptPublicKey()
 )
 
 @JsonClass(generateAdapter = true)

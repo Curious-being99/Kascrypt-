@@ -56,6 +56,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.crypto.BiometricAuthManager
@@ -1082,7 +1083,7 @@ fun VaultScreen(viewModel: VaultViewModel) {
                             
                             Spacer(modifier = Modifier.height(6.dp))
                             
-                            if (decryptedBitmap != null) {
+                            if (item.imagePath != null && isSecretRevealed && decryptedBitmap != null) {
                                 Image(
                                     bitmap = decryptedBitmap!!.asImageBitmap(),
                                     contentDescription = "Decrypted Image",
@@ -1096,7 +1097,7 @@ fun VaultScreen(viewModel: VaultViewModel) {
                                 Spacer(modifier = Modifier.height(8.dp))
                             }
 
-                            val displayContent = if (isSecretRevealed || item.imagePath != null) {
+                            val displayContent = if (isSecretRevealed) {
                                 item.content
                             } else {
                                 "•".repeat(item.content.length.coerceIn(8, 24))
@@ -2265,6 +2266,47 @@ fun SettingsScreen(
     var inspectAddress by remember { mutableStateOf("") }
     var inspectTxId by remember { mutableStateOf("") }
 
+    var backupStatusMessage by remember { mutableStateOf<String?>(null) }
+    var backupErrorMessage by remember { mutableStateOf<String?>(null) }
+
+    val createBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            viewModel.exportEncryptedBackup(
+                context = context,
+                outputUri = uri,
+                onSuccess = { items, images, bytes ->
+                    backupStatusMessage = "Backup exported successfully! $items vault entries, $images encrypted images ($bytes bytes)."
+                    backupErrorMessage = null
+                },
+                onError = { err ->
+                    backupErrorMessage = err
+                    backupStatusMessage = null
+                }
+            )
+        }
+    }
+
+    val restoreBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.importEncryptedBackup(
+                context = context,
+                inputUri = uri,
+                onSuccess = { items, images ->
+                    backupStatusMessage = "Backup restored successfully! Restored $items vault entries and $images images."
+                    backupErrorMessage = null
+                },
+                onError = { err ->
+                    backupErrorMessage = err
+                    backupStatusMessage = null
+                }
+            )
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -2338,6 +2380,13 @@ fun SettingsScreen(
                         Icon(Icons.Default.Explore, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("Explorer", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                Tab(selected = selectedTab == 4, onClick = { selectedTab = 4 }) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp)) {
+                        Icon(Icons.Default.Backup, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Backup & Restore", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
@@ -2867,6 +2916,152 @@ fun SettingsScreen(
                                     color = if (isTxErr) Color(0xFFFF5252) else MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(14.dp)
                                 )
+                            }
+                        }
+                    }
+                    4 -> {
+                        // Backup & Restore Tab
+                        Text(
+                            "Encrypted Vault Backup & Restore",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "Export your entire zero-knowledge encrypted vault archive (including encrypted text entries, seed phrases, and image assets) to a portable file, or restore from an existing backup.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        if (backupStatusMessage != null) {
+                            Card(
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFF70C7BA).copy(alpha = 0.2f)),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF70C7BA)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF70C7BA))
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(backupStatusMessage!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(14.dp))
+                        }
+
+                        if (backupErrorMessage != null) {
+                            Card(
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFF5252)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Default.Error, contentDescription = null, tint = Color(0xFFFF5252))
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(backupErrorMessage!!, style = MaterialTheme.typography.bodySmall, color = Color(0xFFFF5252))
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(14.dp))
+                        }
+
+                        // Export Section
+                        Card(
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.FileDownload, contentDescription = null, tint = Color(0xFF70C7BA))
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text("Export Backup Archive", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    "Generates an XChaCha20-Poly1305 encrypted file (.kascrypt) containing all vault items and image assets. Key is derived from your vault credentials.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(14.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Button(
+                                        onClick = { createBackupLauncher.launch("kascrypt_vault_backup_${System.currentTimeMillis()}.kascrypt") },
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black),
+                                        modifier = Modifier.weight(1f).height(48.dp)
+                                    ) {
+                                        Icon(Icons.Default.SaveAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Save Backup File", fontWeight = FontWeight.Bold)
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = {
+                                            val shareUri = viewModel.createShareableBackupFile(context)
+                                            if (shareUri != null) {
+                                                val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                                    type = "application/json"
+                                                    putExtra(Intent.EXTRA_STREAM, shareUri)
+                                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                }
+                                                context.startActivity(Intent.createChooser(shareIntent, "Share Encrypted Vault Backup"))
+                                            } else {
+                                                backupErrorMessage = "Vault must be unlocked to share backup"
+                                            }
+                                        },
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier.height(48.dp)
+                                    ) {
+                                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Share Archive")
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Import Section
+                        Card(
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.FileUpload, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text("Restore / Import Backup Archive", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    "Select an existing .kascrypt backup archive file from device storage or Google Drive to restore vault items and encrypted image assets.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(14.dp))
+                                OutlinedButton(
+                                    onClick = { restoreBackupLauncher.launch(arrayOf("*/*")) },
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.fillMaxWidth().height(48.dp)
+                                ) {
+                                    Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Select Backup File & Restore", fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
                     }

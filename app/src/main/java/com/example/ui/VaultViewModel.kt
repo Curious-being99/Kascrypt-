@@ -12,6 +12,8 @@ import com.example.crypto.CryptoManager
 import com.example.db.AppConfigEntity
 import com.example.db.VaultDatabase
 import com.example.db.VaultEntryEntity
+import com.example.model.EncryptedVaultBackupArchive
+import com.example.model.VaultBackupPayload
 import com.example.model.VaultItem
 import com.example.network.KaspaAddressBalanceResponse
 import com.example.network.KaspaBlockDagResponse
@@ -53,6 +55,8 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
     private val manifestAdapter = moshi.adapter(KfsManifest::class.java)
     private val chunkListType = Types.newParameterizedType(List::class.java, KfsChunk::class.java)
     private val chunkListAdapter = moshi.adapter<List<KfsChunk>>(chunkListType)
+    private val backupArchiveAdapter = moshi.adapter(EncryptedVaultBackupArchive::class.java)
+    private val backupPayloadAdapter = moshi.adapter(VaultBackupPayload::class.java)
 
     private val _uiState = MutableStateFlow<VaultUiState>(VaultUiState.Loading)
     val uiState = _uiState.asStateFlow()
@@ -825,6 +829,216 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                 e.printStackTrace()
                 withContext(Dispatchers.Main) {
                     onError?.invoke(e.localizedMessage ?: "Failed to encrypt image")
+                }
+            }
+        }
+    }
+
+    fun exportEncryptedBackup(
+        context: Context,
+        outputUri: android.net.Uri,
+        onSuccess: (itemCount: Int, imageCount: Int, byteCount: Long) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val key = derivedKey ?: run {
+            onError("Vault must be unlocked to export backup")
+            return
+        }
+        val priv = privateKey
+        val salt = walletKey
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val currentItems = _vaultItems.value
+                val imageMap = mutableMapOf<String, String>()
+
+                for (item in currentItems) {
+                    if (item.imagePath != null) {
+                        val sanitizedName = File(item.imagePath).name
+                        val file = File(context.filesDir, sanitizedName)
+                        if (file.exists()) {
+                            val imgBytes = file.readBytes()
+                            val base64 = android.util.Base64.encodeToString(imgBytes, android.util.Base64.NO_WRAP)
+                            imageMap[sanitizedName] = base64
+                        }
+                    }
+                }
+
+                val payload = VaultBackupPayload(
+                    items = currentItems,
+                    imageAssets = imageMap
+                )
+                val payloadJson = backupPayloadAdapter.toJson(payload)
+                val payloadPlaintext = payloadJson.toByteArray(Charsets.UTF_8)
+                val encryptedPayload = CryptoManager.encryptXChaCha20Poly1305(payloadPlaintext, key)
+                val encryptedPayloadBase64 = android.util.Base64.encodeToString(encryptedPayload, android.util.Base64.NO_WRAP)
+
+                val signatureHex = if (priv != null) {
+                    val sig = CryptoManager.sign(encryptedPayload, priv)
+                    CryptoManager.bytesToHex(sig)
+                } else null
+
+                val archive = EncryptedVaultBackupArchive(
+                    format = "KASCRYPT_ENCRYPTED_VAULT_BACKUP",
+                    version = 1,
+                    timestamp = System.currentTimeMillis(),
+                    itemCount = currentItems.size,
+                    imageCount = imageMap.size,
+                    saltHex = CryptoManager.bytesToHex(salt.toByteArray(Charsets.UTF_8)),
+                    encryptedPayloadBase64 = encryptedPayloadBase64,
+                    signatureHex = signatureHex
+                )
+
+                val archiveJson = backupArchiveAdapter.toJson(archive)
+                val archiveBytes = archiveJson.toByteArray(Charsets.UTF_8)
+
+                context.contentResolver.openOutputStream(outputUri)?.use { stream ->
+                    stream.write(archiveBytes)
+                    stream.flush()
+                } ?: throw IllegalArgumentException("Could not write to destination file.")
+
+                withContext(Dispatchers.Main) {
+                    onSuccess(currentItems.size, imageMap.size, archiveBytes.size.toLong())
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    onError(e.localizedMessage ?: "Failed to export backup")
+                }
+            }
+        }
+    }
+
+    fun createShareableBackupFile(context: Context): android.net.Uri? {
+        val key = derivedKey ?: return null
+        val priv = privateKey
+        val salt = walletKey
+        val currentItems = _vaultItems.value
+        val imageMap = mutableMapOf<String, String>()
+
+        for (item in currentItems) {
+            if (item.imagePath != null) {
+                val sanitizedName = File(item.imagePath).name
+                val file = File(context.filesDir, sanitizedName)
+                if (file.exists()) {
+                    val imgBytes = file.readBytes()
+                    val base64 = android.util.Base64.encodeToString(imgBytes, android.util.Base64.NO_WRAP)
+                    imageMap[sanitizedName] = base64
+                }
+            }
+        }
+
+        val payload = VaultBackupPayload(
+            items = currentItems,
+            imageAssets = imageMap
+        )
+        val payloadJson = backupPayloadAdapter.toJson(payload)
+        val payloadPlaintext = payloadJson.toByteArray(Charsets.UTF_8)
+        val encryptedPayload = CryptoManager.encryptXChaCha20Poly1305(payloadPlaintext, key)
+        val encryptedPayloadBase64 = android.util.Base64.encodeToString(encryptedPayload, android.util.Base64.NO_WRAP)
+
+        val signatureHex = if (priv != null) {
+            val sig = CryptoManager.sign(encryptedPayload, priv)
+            CryptoManager.bytesToHex(sig)
+        } else null
+
+        val archive = EncryptedVaultBackupArchive(
+            format = "KASCRYPT_ENCRYPTED_VAULT_BACKUP",
+            version = 1,
+            timestamp = System.currentTimeMillis(),
+            itemCount = currentItems.size,
+            imageCount = imageMap.size,
+            saltHex = CryptoManager.bytesToHex(salt.toByteArray(Charsets.UTF_8)),
+            encryptedPayloadBase64 = encryptedPayloadBase64,
+            signatureHex = signatureHex
+        )
+
+        val archiveJson = backupArchiveAdapter.toJson(archive)
+        val backupFile = File(context.cacheDir, "kascrypt_backup_${System.currentTimeMillis()}.kascrypt")
+        backupFile.writeText(archiveJson, Charsets.UTF_8)
+
+        return androidx.core.content.FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            backupFile
+        )
+    }
+
+    fun importEncryptedBackup(
+        context: Context,
+        inputUri: android.net.Uri,
+        onSuccess: (itemCount: Int, imageCount: Int) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val key = derivedKey ?: run {
+            onError("Vault must be unlocked to import and decrypt backup")
+            return
+        }
+        val priv = privateKey ?: run {
+            onError("Vault keys not initialized")
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val jsonString = context.contentResolver.openInputStream(inputUri)?.use { stream ->
+                    stream.bufferedReader(Charsets.UTF_8).readText()
+                } ?: throw IllegalArgumentException("Could not read selected file")
+
+                val archive = backupArchiveAdapter.fromJson(jsonString)
+                    ?: throw IllegalArgumentException("Invalid backup file format")
+
+                val encryptedBytes = android.util.Base64.decode(archive.encryptedPayloadBase64, android.util.Base64.NO_WRAP)
+                
+                // Decrypt with current derived key
+                val decryptedBytes = try {
+                    CryptoManager.decryptXChaCha20Poly1305(encryptedBytes, key)
+                } catch (e: Exception) {
+                    throw IllegalStateException("Decryption failed: Master password/key mismatch for this backup archive.")
+                }
+
+                val payloadJson = String(decryptedBytes, Charsets.UTF_8)
+                val payload = backupPayloadAdapter.fromJson(payloadJson)
+                    ?: throw IllegalArgumentException("Failed to parse vault payload data")
+
+                var restoredImages = 0
+                for ((filename, b64Data) in payload.imageAssets) {
+                    try {
+                        val sanitizedName = File(filename).name
+                        val imgFile = File(context.filesDir, sanitizedName)
+                        val data = android.util.Base64.decode(b64Data, android.util.Base64.NO_WRAP)
+                        imgFile.writeBytes(data)
+                        restoredImages++
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+
+                var restoredItems = 0
+                for (item in payload.items) {
+                    val itemJson = vaultItemAdapter.toJson(item)
+                    val plaintext = itemJson.toByteArray(Charsets.UTF_8)
+                    val ciphertext = CryptoManager.encryptXChaCha20Poly1305(plaintext, key)
+                    val signature = CryptoManager.sign(ciphertext, priv)
+                    val entity = VaultEntryEntity(
+                        id = item.id,
+                        ciphertext = ciphertext,
+                        signature = signature
+                    )
+                    db.vaultDao().insertEntry(entity)
+                    restoredItems++
+                }
+
+                loadItems()
+                resetAutoLockTimer()
+
+                withContext(Dispatchers.Main) {
+                    onSuccess(restoredItems, restoredImages)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    onError(e.localizedMessage ?: "Failed to restore backup")
                 }
             }
         }
