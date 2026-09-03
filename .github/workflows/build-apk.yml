@@ -3,6 +3,7 @@ name: Build Android APK (Debug, Release & Unsigned)
 on:
   push:
     branches: [ "main", "master" ]
+    tags: [ "v*", "*.*.*" ]
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch:
@@ -123,3 +124,37 @@ jobs:
           path: build-unsigned/*.apk
           retention-days: 90
           if-no-files-found: error
+
+      # 5. Prepare and Publish APKs to GitHub Release (Latest Tag)
+      - name: Prepare Named Release Assets
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p release-assets
+          DEBUG_APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          RELEASE_SIGNED_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          UNSIGNED_APK="build-unsigned/app-release-unsigned.apk"
+
+          if [ -n "$DEBUG_APK" ]; then
+            cp "$DEBUG_APK" release-assets/KasCrypt-debug.apk
+          fi
+          if [ -n "$RELEASE_SIGNED_APK" ]; then
+            cp "$RELEASE_SIGNED_APK" release-assets/KasCrypt-release-signed.apk
+          fi
+          if [ -f "$UNSIGNED_APK" ]; then
+            cp "$UNSIGNED_APK" release-assets/KasCrypt-release-unsigned.apk
+          fi
+          ls -lh release-assets/
+
+      - name: Publish to GitHub Release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
+          name: ${{ github.ref_type == 'tag' && github.ref_name || 'KasCrypt Latest Release' }}
+          draft: false
+          prerelease: false
+          make_latest: true
+          generate_release_notes: true
+          files: release-assets/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

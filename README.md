@@ -55,9 +55,12 @@ Kascrypt is a post-quantum secure Android local vault and cryptographic wallet e
 
 ## Continuous Integration & Release Builds
 
-The repository includes an automated GitHub Actions workflow (`.github/workflows/build-apk.yml`) that builds and produces three distinct APK artifacts on every push or manual dispatch:
-1. **`app-debug-apk`**: Development debug build (`assembleDebug`).
-2. **`app-release-signed-apk`**: Production release build (`assembleRelease`), signed with either repository secrets (`RELEASE_KEYSTORE_BASE64`) or an automated 10,000-day CI release keystore.
-3. **`app-release-unsigned-apk`**: Clean unsigned release build with all cryptographic signature envelopes (`META-INF`) stripped, ready for custom keystores, third-party distribution, or F-Droid/re-signing pipelines.
-- Artifact retention is set to the maximum allowed 90 days.
+The repository includes an automated GitHub Actions workflow (`.github/workflows/build-apk.yml`) that builds, packages, and publishes APKs directly to **GitHub Releases**:
+1. **`KasCrypt-debug.apk`**: Development debug build (`assembleDebug`).
+2. **`KasCrypt-release-signed.apk`**: Production release build (`assembleRelease`), signed with either repository secrets (`RELEASE_KEYSTORE_BASE64`) or an automated 10,000-day CI release keystore.
+3. **`KasCrypt-release-unsigned.apk`**: Clean unsigned release build with cryptographic signature envelopes (`META-INF`) stripped, ready for custom keystores, third-party distribution, or F-Droid/re-signing pipelines.
+
+### GitHub Releases (Latest Tag)
+- **Automatic Publishing:** On every push to `main`/`master`, git tag (e.g. `v1.0.0`), or workflow dispatch, the workflow automatically attaches all 3 APKs directly to the GitHub Release on the **`latest`** tag (or the pushed version tag) with `make_latest: true`.
+- **Workflow Artifacts:** In addition to GitHub Releases, builds are retained under GitHub Actions artifacts for 90 days.
 
