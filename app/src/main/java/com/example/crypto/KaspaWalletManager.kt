@@ -199,6 +199,63 @@ object KaspaWalletManager {
         return out.toByteArray()
     }
 
+    /**
+     * Compute BIP-340 / Kaspa Secp256k1 Schnorr signature for a 32-byte message hash
+     */
+    fun signSchnorr(msgHash: ByteArray, privKeyHex: String): ByteArray {
+        val privKeyBytes = CryptoManager.hexToBytes(privKeyHex)
+        var d = BigInteger(1, privKeyBytes).mod(secp256k1Curve.n)
+
+        // Ensure even Y coordinate for public key P = d * G
+        val p = secp256k1Curve.g.multiply(d).normalize()
+        if (p.affineYCoord.toBigInteger().testBit(0)) {
+            d = secp256k1Curve.n.subtract(d)
+        }
+
+        // Deterministic nonce k generation using SHA-256 over privKey and msgHash
+        val h = MessageDigest.getInstance("SHA-256")
+        h.update(privKeyBytes)
+        h.update(msgHash)
+        val aux = h.digest()
+
+        var k = BigInteger(1, aux).mod(secp256k1Curve.n)
+        if (k == BigInteger.ZERO) k = BigInteger.ONE
+
+        var rPoint = secp256k1Curve.g.multiply(k).normalize()
+        if (rPoint.affineYCoord.toBigInteger().testBit(0)) {
+            k = secp256k1Curve.n.subtract(k)
+            rPoint = secp256k1Curve.g.multiply(k).normalize()
+        }
+
+        val rX = rPoint.affineXCoord.encoded
+        val pX = p.affineXCoord.encoded
+
+        // e = SHA256(rX || pX || msgHash) mod n
+        val digest = MessageDigest.getInstance("SHA-256")
+        digest.update(rX)
+        digest.update(pX)
+        digest.update(msgHash)
+        val eBytes = digest.digest()
+        val e = BigInteger(1, eBytes).mod(secp256k1Curve.n)
+
+        // s = (k + e * d) mod n
+        val s = k.add(e.multiply(d)).mod(secp256k1Curve.n)
+
+        // Result 64 bytes: rX (32 bytes) + s (32 bytes padded)
+        val sBytes = s.toByteArray()
+        val sPadded = ByteArray(32)
+        if (sBytes.size > 32) {
+            System.arraycopy(sBytes, sBytes.size - 32, sPadded, 0, 32)
+        } else {
+            System.arraycopy(sBytes, 0, sPadded, 32 - sBytes.size, sBytes.size)
+        }
+
+        val result = ByteArray(64)
+        System.arraycopy(rX, 0, result, 0, 32)
+        System.arraycopy(sPadded, 0, result, 32, 32)
+        return result
+    }
+
     // --- BIP-39 & BIP-32 Implementation ---
 
     fun validateMnemonic(mnemonic: String): MnemonicValidationResult {

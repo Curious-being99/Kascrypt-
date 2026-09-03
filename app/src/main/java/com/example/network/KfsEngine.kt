@@ -6,6 +6,9 @@ import com.squareup.moshi.Moshi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.security.MessageDigest
 import java.util.UUID
 
 @JsonClass(generateAdapter = true)
@@ -272,13 +275,30 @@ object KfsEngine {
             version = utxoScriptPubKey?.version ?: 0
         )
 
+        val md = MessageDigest.getInstance("SHA-256")
+        val prevTxId = selectedUtxo.outpoint.transactionId
+        if (prevTxId.length == 64) {
+            md.update(CryptoManager.hexToBytes(prevTxId))
+        }
+        val outIdx = selectedUtxo.outpoint.index ?: 0L
+        md.update(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(outIdx).array())
+        if (!payloadHex.isNullOrEmpty()) {
+            md.update(CryptoManager.hexToBytes(payloadHex))
+        }
+        val sighash = md.digest()
+
+        val schnorrSig = com.example.crypto.KaspaWalletManager.signSchnorr(sighash, wallet.privateKeyHex)
+        val schnorrSigHex = CryptoManager.bytesToHex(schnorrSig)
+        // Kaspa P2PK opcode 0x41 (65 bytes) + 64-byte Schnorr signature + 0x01 (SIGHASH_ALL)
+        val signatureScript = "41" + schnorrSigHex + "01"
+
         val inputs = listOf(
             KaspaTransactionInput(
                 previousOutpoint = KaspaOutpoint(
                     transactionId = selectedUtxo.outpoint.transactionId,
                     index = selectedUtxo.outpoint.index ?: 0L
                 ),
-                signatureScript = "",
+                signatureScript = signatureScript,
                 sequence = 0L,
                 sigOpCount = 1
             )
