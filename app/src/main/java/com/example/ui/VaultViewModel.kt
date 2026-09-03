@@ -849,11 +849,26 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val currentItems = _vaultItems.value
-                val imageMap = mutableMapOf<String, String>()
+                var currentItems = _vaultItems.value
+                if (currentItems.isEmpty()) {
+                    val entities = db.vaultDao().getAllEntries()
+                    val loaded = mutableListOf<VaultItem>()
+                    for (entity in entities) {
+                        try {
+                            val decryptedBytes = CryptoManager.decryptXChaCha20Poly1305(entity.ciphertext, key)
+                            val json = String(decryptedBytes, Charsets.UTF_8)
+                            val item = vaultItemAdapter.fromJson(json)
+                            if (item != null) loaded.add(item)
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                    }
+                    currentItems = loaded
+                }
 
+                val imageMap = mutableMapOf<String, String>()
                 for (item in currentItems) {
-                    if (item.imagePath != null) {
+                    if (!item.imagePath.isNullOrBlank()) {
                         val sanitizedName = File(item.imagePath).name
                         val file = File(context.filesDir, sanitizedName)
                         if (file.exists()) {
@@ -892,10 +907,32 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                 val archiveJson = backupArchiveAdapter.toJson(archive)
                 val archiveBytes = archiveJson.toByteArray(Charsets.UTF_8)
 
-                context.contentResolver.openOutputStream(outputUri)?.use { stream ->
-                    stream.write(archiveBytes)
-                    stream.flush()
-                } ?: throw IllegalArgumentException("Could not write to destination file.")
+                var written = false
+                listOf("rwt", "wt", "w").forEach { mode ->
+                    if (!written) {
+                        try {
+                            context.contentResolver.openOutputStream(outputUri, mode)?.use { stream ->
+                                stream.write(archiveBytes)
+                                stream.flush()
+                                written = true
+                            }
+                        } catch (e: Exception) {
+                            // try next write mode
+                        }
+                    }
+                }
+
+                if (!written) {
+                    context.contentResolver.openOutputStream(outputUri)?.use { stream ->
+                        stream.write(archiveBytes)
+                        stream.flush()
+                        written = true
+                    }
+                }
+
+                if (!written) {
+                    throw IllegalArgumentException("Could not write backup bytes to selected storage location")
+                }
 
                 withContext(Dispatchers.Main) {
                     onSuccess(currentItems.size, imageMap.size, archiveBytes.size.toLong())
@@ -913,11 +950,27 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
         val key = derivedKey ?: return null
         val priv = privateKey
         val salt = walletKey
-        val currentItems = _vaultItems.value
-        val imageMap = mutableMapOf<String, String>()
+        
+        var currentItems = _vaultItems.value
+        if (currentItems.isEmpty()) {
+            val entities = kotlinx.coroutines.runBlocking(Dispatchers.IO) { db.vaultDao().getAllEntries() }
+            val loaded = mutableListOf<VaultItem>()
+            for (entity in entities) {
+                try {
+                    val decryptedBytes = CryptoManager.decryptXChaCha20Poly1305(entity.ciphertext, key)
+                    val json = String(decryptedBytes, Charsets.UTF_8)
+                    val item = vaultItemAdapter.fromJson(json)
+                    if (item != null) loaded.add(item)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+            currentItems = loaded
+        }
 
+        val imageMap = mutableMapOf<String, String>()
         for (item in currentItems) {
-            if (item.imagePath != null) {
+            if (!item.imagePath.isNullOrBlank()) {
                 val sanitizedName = File(item.imagePath).name
                 val file = File(context.filesDir, sanitizedName)
                 if (file.exists()) {

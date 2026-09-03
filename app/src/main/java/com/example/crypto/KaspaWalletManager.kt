@@ -199,26 +199,52 @@ object KaspaWalletManager {
         return out.toByteArray()
     }
 
+    private fun bip340TaggedHash(tag: String, data: ByteArray): ByteArray {
+        val md = MessageDigest.getInstance("SHA-256")
+        val tagHash = md.digest(tag.toByteArray(Charsets.UTF_8))
+        md.reset()
+        md.update(tagHash)
+        md.update(tagHash)
+        md.update(data)
+        return md.digest()
+    }
+
     /**
      * Compute BIP-340 / Kaspa Secp256k1 Schnorr signature for a 32-byte message hash
      */
     fun signSchnorr(msgHash: ByteArray, privKeyHex: String): ByteArray {
         val privKeyBytes = CryptoManager.hexToBytes(privKeyHex)
-        var d = BigInteger(1, privKeyBytes).mod(secp256k1Curve.n)
+        val privKeyPadded = ByteArray(32)
+        if (privKeyBytes.size >= 32) {
+            System.arraycopy(privKeyBytes, privKeyBytes.size - 32, privKeyPadded, 0, 32)
+        } else {
+            System.arraycopy(privKeyBytes, 0, privKeyPadded, 32 - privKeyBytes.size, privKeyBytes.size)
+        }
+
+        var d = BigInteger(1, privKeyPadded).mod(secp256k1Curve.n)
 
         // Ensure even Y coordinate for public key P = d * G
         val p = secp256k1Curve.g.multiply(d).normalize()
         if (p.affineYCoord.toBigInteger().testBit(0)) {
             d = secp256k1Curve.n.subtract(d)
         }
+        val pX = p.affineXCoord.encoded
 
-        // Deterministic nonce k generation using SHA-256 over privKey and msgHash
-        val h = MessageDigest.getInstance("SHA-256")
-        h.update(privKeyBytes)
-        h.update(msgHash)
-        val aux = h.digest()
+        // Deterministic nonce k generation per BIP-340 using tagged hash
+        val aux = ByteArray(32) // 32 zero bytes for deterministic aux
+        val t = bip340TaggedHash("BIP0340/aux", aux)
+        val maskedKey = ByteArray(32)
+        for (i in 0 until 32) {
+            maskedKey[i] = (privKeyPadded[i].toInt() xor t[i].toInt()).toByte()
+        }
 
-        var k = BigInteger(1, aux).mod(secp256k1Curve.n)
+        val nonceData = ByteArray(32 + 32 + msgHash.size)
+        System.arraycopy(maskedKey, 0, nonceData, 0, 32)
+        System.arraycopy(pX, 0, nonceData, 32, 32)
+        System.arraycopy(msgHash, 0, nonceData, 64, msgHash.size)
+
+        val kBytes = bip340TaggedHash("BIP0340/nonce", nonceData)
+        var k = BigInteger(1, kBytes).mod(secp256k1Curve.n)
         if (k == BigInteger.ZERO) k = BigInteger.ONE
 
         var rPoint = secp256k1Curve.g.multiply(k).normalize()
@@ -228,14 +254,14 @@ object KaspaWalletManager {
         }
 
         val rX = rPoint.affineXCoord.encoded
-        val pX = p.affineXCoord.encoded
 
-        // e = SHA256(rX || pX || msgHash) mod n
-        val digest = MessageDigest.getInstance("SHA-256")
-        digest.update(rX)
-        digest.update(pX)
-        digest.update(msgHash)
-        val eBytes = digest.digest()
+        // e = BIP0340/challenge(rX || pX || msgHash) mod n
+        val challengeData = ByteArray(32 + 32 + msgHash.size)
+        System.arraycopy(rX, 0, challengeData, 0, 32)
+        System.arraycopy(pX, 0, challengeData, 32, 32)
+        System.arraycopy(msgHash, 0, challengeData, 64, msgHash.size)
+
+        val eBytes = bip340TaggedHash("BIP0340/challenge", challengeData)
         val e = BigInteger(1, eBytes).mod(secp256k1Curve.n)
 
         // s = (k + e * d) mod n
