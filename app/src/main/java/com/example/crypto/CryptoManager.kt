@@ -112,68 +112,30 @@ object CryptoManager {
     }
 
     // NIST FIPS 204 Post-Quantum ML-DSA Digital Signatures
-    // Parameter Sets: ML-DSA-65 (NIST Level 3 / Recommended Default), ML-DSA-87 (Level 5), ML-DSA-44 (Level 2)
+    // Strict Enforcement of Parameter Sets: ML-DSA-65 (NIST Level 3 Default), ML-DSA-87 (Level 5), ML-DSA-44 (Level 2)
     fun generateMLDSAKeyPair(parameterSet: String = "ML-DSA-65"): KeyPair {
         val targetSet = when (parameterSet.uppercase()) {
             "ML-DSA-87", "DILITHIUM5" -> "ML-DSA-87"
             "ML-DSA-44", "DILITHIUM2" -> "ML-DSA-44"
             else -> "ML-DSA-65"
         }
-        val candidateAlgos = listOf(
-            targetSet,
-            "ML-DSA-65",
-            "ML-DSA-87",
-            "ML-DSA-44",
-            "ML-DSA",
-            "Dilithium3",
-            "Dilithium",
-            "Dilithium5",
-            "Dilithium2"
-        ).distinct()
 
-        for (algo in candidateAlgos) {
+        try {
+            val kpg = KeyPairGenerator.getInstance(targetSet, BouncyCastlePQCProvider.PROVIDER_NAME)
+            return kpg.generateKeyPair()
+        } catch (_: Throwable) {
             try {
-                val kpg = KeyPairGenerator.getInstance(algo, BouncyCastlePQCProvider.PROVIDER_NAME)
+                val kpg = KeyPairGenerator.getInstance(targetSet)
                 return kpg.generateKeyPair()
-            } catch (_: Throwable) {
-                // Try next NIST parameter set algorithm
+            } catch (e: Throwable) {
+                throw java.security.NoSuchAlgorithmException("Strict enforcement failure: NIST parameter set '$targetSet' is required but not available in security providers.", e)
             }
         }
-        val kpg = KeyPairGenerator.getInstance("Dilithium", BouncyCastlePQCProvider.PROVIDER_NAME)
-        return kpg.generateKeyPair()
     }
     
-    // Primary: NIST Post-Quantum ML-DSA (Explicit Parameter Set: ML-DSA-65 / NIST Level 3); Secondary: Ed25519 fallback
+    // Strict NIST Post-Quantum ML-DSA Key Generation (Enforced Parameter Set: ML-DSA-65 / NIST Level 3)
     fun generateSignKeyPairFallback(parameterSet: String = "ML-DSA-65"): KeyPair {
-        val targetSet = when (parameterSet.uppercase()) {
-            "ML-DSA-87", "DILITHIUM5" -> "ML-DSA-87"
-            "ML-DSA-44", "DILITHIUM2" -> "ML-DSA-44"
-            else -> "ML-DSA-65"
-        }
-        val pqcAlgos = listOf(
-            targetSet,
-            "ML-DSA-65",
-            "ML-DSA-87",
-            "ML-DSA-44",
-            "ML-DSA",
-            "Dilithium3",
-            "Dilithium",
-            "Dilithium2",
-            "Dilithium5",
-            "Falcon-512"
-        ).distinct()
-
-        for (algo in pqcAlgos) {
-            try {
-                val kpg = KeyPairGenerator.getInstance(algo, BouncyCastlePQCProvider.PROVIDER_NAME)
-                return kpg.generateKeyPair()
-            } catch (_: Throwable) {
-                // Continue trying next post-quantum algorithm
-            }
-        }
-        // Fallback to Ed25519 if runtime environment has no native PQC bytecode registered
-        val kpg = KeyPairGenerator.getInstance("Ed25519", BouncyCastleProvider.PROVIDER_NAME)
-        return kpg.generateKeyPair()
+        return generateMLDSAKeyPair(parameterSet)
     }
 
     fun sign(data: ByteArray, privateKey: PrivateKey): ByteArray {
