@@ -111,20 +111,63 @@ object CryptoManager {
         return data
     }
 
-    // ML-DSA-87 (Dilithium) Signatures
-    fun generateMLDSAKeyPair(): KeyPair {
+    // NIST FIPS 204 Post-Quantum ML-DSA Digital Signatures
+    // Parameter Sets: ML-DSA-65 (NIST Level 3 / Recommended Default), ML-DSA-87 (Level 5), ML-DSA-44 (Level 2)
+    fun generateMLDSAKeyPair(parameterSet: String = "ML-DSA-65"): KeyPair {
+        val targetSet = when (parameterSet.uppercase()) {
+            "ML-DSA-87", "DILITHIUM5" -> "ML-DSA-87"
+            "ML-DSA-44", "DILITHIUM2" -> "ML-DSA-44"
+            else -> "ML-DSA-65"
+        }
+        val candidateAlgos = listOf(
+            targetSet,
+            "ML-DSA-65",
+            "ML-DSA-87",
+            "ML-DSA-44",
+            "ML-DSA",
+            "Dilithium3",
+            "Dilithium",
+            "Dilithium5",
+            "Dilithium2"
+        ).distinct()
+
+        for (algo in candidateAlgos) {
+            try {
+                val kpg = KeyPairGenerator.getInstance(algo, BouncyCastlePQCProvider.PROVIDER_NAME)
+                return kpg.generateKeyPair()
+            } catch (_: Throwable) {
+                // Try next NIST parameter set algorithm
+            }
+        }
         val kpg = KeyPairGenerator.getInstance("Dilithium", BouncyCastlePQCProvider.PROVIDER_NAME)
         return kpg.generateKeyPair()
     }
     
-    // Primary: NIST Post-Quantum ML-DSA-65 / Dilithium3 / ML-DSA; Secondary: Ed25519 fallback
-    fun generateSignKeyPairFallback(): KeyPair {
-        val pqcAlgos = listOf("ML-DSA-65", "ML-DSA", "ML-DSA-87", "ML-DSA-44", "Dilithium3", "Dilithium", "Dilithium2", "Dilithium5", "Falcon-512")
+    // Primary: NIST Post-Quantum ML-DSA (Explicit Parameter Set: ML-DSA-65 / NIST Level 3); Secondary: Ed25519 fallback
+    fun generateSignKeyPairFallback(parameterSet: String = "ML-DSA-65"): KeyPair {
+        val targetSet = when (parameterSet.uppercase()) {
+            "ML-DSA-87", "DILITHIUM5" -> "ML-DSA-87"
+            "ML-DSA-44", "DILITHIUM2" -> "ML-DSA-44"
+            else -> "ML-DSA-65"
+        }
+        val pqcAlgos = listOf(
+            targetSet,
+            "ML-DSA-65",
+            "ML-DSA-87",
+            "ML-DSA-44",
+            "ML-DSA",
+            "Dilithium3",
+            "Dilithium",
+            "Dilithium2",
+            "Dilithium5",
+            "Falcon-512"
+        ).distinct()
+
         for (algo in pqcAlgos) {
             try {
                 val kpg = KeyPairGenerator.getInstance(algo, BouncyCastlePQCProvider.PROVIDER_NAME)
                 return kpg.generateKeyPair()
-            } catch (e: Throwable) {
+            } catch (_: Throwable) {
                 // Continue trying next post-quantum algorithm
             }
         }
