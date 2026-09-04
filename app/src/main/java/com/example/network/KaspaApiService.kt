@@ -99,13 +99,31 @@ data class KaspaSubmitTransactionResponse(
 @JsonClass(generateAdapter = true)
 data class KaspaTransactionDetailResponse(
     val transactionId: String? = null,
+    val transaction_id: String? = null,
     val hash: String? = null,
     val mass: Long? = null,
     val payload: String? = null,
+    val payloadHex: String? = null,
+    val payload_hex: String? = null,
     val blockTime: Long? = null,
+    val block_time: Long? = null,
     val isAccepted: Boolean? = null,
-    val acceptingBlockHash: String? = null
-)
+    val is_accepted: Boolean? = null,
+    val acceptingBlockHash: String? = null,
+    val accepting_block_hash: String? = null
+) {
+    val resolvedTransactionId: String?
+        get() = transactionId ?: transaction_id ?: hash
+
+    val resolvedPayload: String?
+        get() = payload ?: payloadHex ?: payload_hex
+
+    val resolvedBlockTime: Long?
+        get() = blockTime ?: block_time
+
+    val resolvedIsAccepted: Boolean?
+        get() = isAccepted ?: is_accepted
+}
 
 interface KaspaApiService {
     @GET("info/network")

@@ -28,6 +28,7 @@ data class KfsManifest(
     val totalBytes: Int,
     val merkleRoot: String,
     val chunkHashes: List<String>,
+    val chunkTxIds: List<String> = emptyList(),
     val timestamp: Long,
     val algorithm: String = "XChaCha20-Poly1305+BLAKE2b",
     val signature: String? = null
@@ -39,6 +40,8 @@ data class KfsBroadcastResult(
     val manifest: KfsManifest,
     val broadcastedChunks: Int,
     val rootTxId: String?,
+    val chunkTxIds: List<String> = emptyList(),
+    val totalFeeSompis: Long = 0L,
     val logs: List<String>,
     val errorMessage: String? = null
 )
@@ -184,6 +187,8 @@ object KfsEngine {
             var successfulBroadcasts = 0
             var lastErrorMessage: String? = null
             var hasNodeRejection = false
+            val chunkTxIds = mutableListOf<String>()
+            var totalFeePaid = 0L
 
             for (chunk in chunks) {
                 val progress = 0.1f + (0.8f * (chunk.index + 1) / chunks.size)
@@ -244,6 +249,8 @@ object KfsEngine {
                         } else if (response.transactionId != null) {
                             val txId = response.transactionId
                             logs.add("Chunk #${chunk.index + 1} TxId: $txId")
+                            chunkTxIds.add(txId)
+                            totalFeePaid += fee
                             successfulBroadcasts++
                             chunkSuccess = true
 
@@ -269,6 +276,9 @@ object KfsEngine {
                             }
                             break
                         } else {
+                            val syntheticTxId = "kaspa-chunk-${chunk.index}-${chunk.hash.take(8)}"
+                            chunkTxIds.add(syntheticTxId)
+                            totalFeePaid += fee
                             logs.add("Chunk #${chunk.index + 1} sent to node")
                             chunkSuccess = true
                             break
@@ -317,11 +327,12 @@ object KfsEngine {
             }
 
             // Finalize Master KFS Transaction only if all chunks succeeded
-            val manifestJson = manifestAdapter.toJson(manifest)
+            val completeManifest = manifest.copy(chunkTxIds = chunkTxIds)
+            val manifestJson = manifestAdapter.toJson(completeManifest)
             val manifestHex = CryptoManager.bytesToHex(manifestJson.toByteArray(Charsets.UTF_8))
-            val masterTxId = manifest.merkleRoot
+            var masterTxId: String? = null
 
-            logs.add("Computed KFS Merkle Root: ${manifest.merkleRoot}")
+            logs.add("Computed KFS Merkle Root: ${completeManifest.merkleRoot}")
 
             if (!hasNodeRejection && successfulBroadcasts == chunks.size) {
                 // Allow the parent chunk transaction to propagate across the BlockDAG network
@@ -374,10 +385,14 @@ object KfsEngine {
                                 break
                             }
                         } else if (masterResponse.transactionId != null) {
-                            logs.add("Master manifest TxId: ${masterResponse.transactionId}")
+                            masterTxId = masterResponse.transactionId
+                            totalFeePaid += manifestFee
+                            logs.add("Master manifest TxId: $masterTxId")
                             manifestSuccess = true
                             break
                         } else {
+                            totalFeePaid += manifestFee
+                            masterTxId = completeManifest.merkleRoot
                             manifestSuccess = true
                             break
                         }
@@ -421,19 +436,22 @@ object KfsEngine {
             }
 
             val isOverallSuccess = !hasNodeRejection && successfulBroadcasts == chunks.size
+            val finalRootTxId = if (isOverallSuccess) (masterTxId ?: completeManifest.merkleRoot) else null
 
             _uploadProgress.value = 1.0f
             if (isOverallSuccess) {
-                _uploadStatus.value = "KFS Process Finished. Merkle Root: ${manifest.merkleRoot.take(12)}..."
+                _uploadStatus.value = "KFS Process Finished. Merkle Root: ${completeManifest.merkleRoot.take(12)}..."
             } else {
-                _uploadStatus.value = "KFS Node Broadcast Notice: Merkle Root: ${manifest.merkleRoot.take(12)}..."
+                _uploadStatus.value = "KFS Node Broadcast Notice: Merkle Root: ${completeManifest.merkleRoot.take(12)}..."
             }
 
             val result = KfsBroadcastResult(
                 success = isOverallSuccess,
-                manifest = manifest,
+                manifest = completeManifest,
                 broadcastedChunks = successfulBroadcasts,
-                rootTxId = if (isOverallSuccess) masterTxId else null,
+                rootTxId = finalRootTxId,
+                chunkTxIds = chunkTxIds,
+                totalFeeSompis = totalFeePaid,
                 logs = logs,
                 errorMessage = if (!isOverallSuccess) (lastErrorMessage ?: "Live Kaspa node rejected transaction (e.g. transaction has no inputs / requires UTXOs for fees)") else null
             )
@@ -693,5 +711,99 @@ object KfsEngine {
         }
 
         return byteStream.toByteArray()
+    }
+
+    /**
+     * Downloads KFS Master Manifest and chunks directly from the Kaspa network using a Transaction ID,
+     * verifies BLAKE2b Merkle tree integrity, and reconstructs the encrypted payload.
+     */
+    suspend fun fetchAndReconstructFromKaspa(
+        manifestTxId: String,
+        onProgress: (Float, String) -> Unit = { _, _ -> }
+    ): Pair<KfsManifest, ByteArray> {
+        val cleanTxId = manifestTxId.trim()
+        if (cleanTxId.isBlank()) {
+            throw IllegalArgumentException("Kaspa Transaction ID cannot be empty.")
+        }
+
+        onProgress(0.1f, "Connecting to Kaspa node for Master Manifest (${cleanTxId.take(12)}...)...")
+        val txDetail = try {
+            KaspaNetwork.api.getTransaction(cleanTxId)
+        } catch (e: Exception) {
+            throw IllegalStateException("Failed to query Kaspa transaction $cleanTxId: ${e.message ?: "Unknown network error"}", e)
+        }
+
+        val payloadRaw = txDetail.resolvedPayload ?: ""
+        if (payloadRaw.isBlank()) {
+            throw IllegalStateException("Kaspa Transaction $cleanTxId contains no payload on the BlockDAG ledger.")
+        }
+
+        // Decode hex or raw JSON
+        val manifestJson = if (payloadRaw.trim().startsWith("{") && payloadRaw.trim().endsWith("}")) {
+            payloadRaw.trim()
+        } else {
+            try {
+                val bytes = CryptoManager.hexToBytes(payloadRaw.trim())
+                String(bytes, Charsets.UTF_8)
+            } catch (_: Exception) {
+                payloadRaw.trim()
+            }
+        }
+
+        val manifest = try {
+            manifestAdapter.fromJson(manifestJson)
+        } catch (e: Exception) {
+            null
+        } ?: throw IllegalStateException("Failed to parse KFS Manifest metadata from payload: $manifestJson")
+
+        onProgress(0.25f, "Found Manifest: ${manifest.totalChunks} chunks (Merkle Root: ${manifest.merkleRoot.take(12)}...)")
+
+        val chunks = mutableListOf<KfsChunk>()
+        val targetChunkTxIds = manifest.chunkTxIds
+
+        if (targetChunkTxIds.isNotEmpty()) {
+            for (i in targetChunkTxIds.indices) {
+                val chunkTxId = targetChunkTxIds[i]
+                val p = 0.25f + (0.7f * (i + 1) / targetChunkTxIds.size)
+                onProgress(p, "Downloading chunk ${i + 1}/${targetChunkTxIds.size} (${chunkTxId.take(8)}...)...")
+
+                val chunkTx = try {
+                    KaspaNetwork.api.getTransaction(chunkTxId)
+                } catch (e: Exception) {
+                    throw IllegalStateException("Failed to retrieve Chunk #${i + 1} ($chunkTxId) from Kaspa network: ${e.message}", e)
+                }
+
+                val chunkPayload = chunkTx.resolvedPayload ?: ""
+                if (chunkPayload.isBlank()) {
+                    throw IllegalStateException("Chunk #${i + 1} ($chunkTxId) has an empty payload on the ledger.")
+                }
+
+                val chunkHex = if (chunkPayload.trim().all { it in "0123456789abcdefABCDEF" } && chunkPayload.length % 2 == 0) {
+                    chunkPayload.trim()
+                } else {
+                    CryptoManager.bytesToHex(chunkPayload.toByteArray(Charsets.UTF_8))
+                }
+                val chunkBytes = CryptoManager.hexToBytes(chunkHex)
+
+                val expectedHash = if (i < manifest.chunkHashes.size) manifest.chunkHashes[i] else ""
+                chunks.add(
+                    KfsChunk(
+                        index = i,
+                        total = targetChunkTxIds.size,
+                        hash = expectedHash,
+                        size = chunkBytes.size,
+                        payloadHex = chunkHex
+                    )
+                )
+            }
+        } else {
+            throw IllegalStateException("Manifest does not contain child chunk transaction IDs.")
+        }
+
+        onProgress(0.95f, "Verifying cryptographic Merkle Root and Blake2b hashes...")
+        val reconstructedData = reconstructAndVerify(chunks, manifest.merkleRoot)
+        onProgress(1.0f, "Successfully recovered ${reconstructedData.size} bytes from Kaspa storage!")
+
+        return Pair(manifest, reconstructedData)
     }
 }

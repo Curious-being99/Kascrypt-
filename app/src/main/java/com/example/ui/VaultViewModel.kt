@@ -10,6 +10,7 @@ import androidx.room.Room
 import com.example.crypto.BiometricAuthManager
 import com.example.crypto.CryptoManager
 import com.example.db.AppConfigEntity
+import com.example.db.KfsBroadcastRecordEntity
 import com.example.db.VaultDatabase
 import com.example.db.VaultEntryEntity
 import com.example.model.EncryptedVaultBackupArchive
@@ -31,8 +32,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -46,7 +49,10 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
     private val db = Room.databaseBuilder(
         application,
         VaultDatabase::class.java, "vault-db"
-    ).build()
+    )
+    .addMigrations(VaultDatabase.MIGRATION_1_2)
+    .fallbackToDestructiveMigrationOnDowngrade()
+    .build()
 
     private val moshi = Moshi.Builder().build()
     private val vaultItemAdapter = moshi.adapter(VaultItem::class.java)
@@ -57,6 +63,20 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
     private val chunkListAdapter = moshi.adapter<List<KfsChunk>>(chunkListType)
     private val backupArchiveAdapter = moshi.adapter(EncryptedVaultBackupArchive::class.java)
     private val backupPayloadAdapter = moshi.adapter(VaultBackupPayload::class.java)
+    private val stringListType = Types.newParameterizedType(List::class.java, String::class.java)
+    private val stringListAdapter = moshi.adapter<List<String>>(stringListType)
+
+    val kfsBroadcastRecords = db.kfsDao().getAllRecords()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private val _isRestoringFromKfs = MutableStateFlow(false)
+    val isRestoringFromKfs = _isRestoringFromKfs.asStateFlow()
+
+    private val _kfsRestoreProgress = MutableStateFlow(0f)
+    val kfsRestoreProgress = _kfsRestoreProgress.asStateFlow()
+
+    private val _kfsRestoreStatus = MutableStateFlow("")
+    val kfsRestoreStatus = _kfsRestoreStatus.asStateFlow()
 
     private val _uiState = MutableStateFlow<VaultUiState>(VaultUiState.Loading)
     val uiState = _uiState.asStateFlow()
@@ -193,13 +213,33 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun broadcastVaultToKaspa() {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             val key = derivedKey ?: return@launch
             val priv = privateKey ?: return@launch
+            val context = getApplication<Application>()
 
             val currentItems = _vaultItems.value
-            val vaultJson = vaultItemListAdapter.toJson(currentItems)
-            val vaultBytes = vaultJson.toByteArray(Charsets.UTF_8)
+            val imagesMap = mutableMapOf<String, String>()
+            for (item in currentItems) {
+                if (!item.imagePath.isNullOrBlank()) {
+                    try {
+                        val sanitizedName = File(item.imagePath).name
+                        val imgFile = File(context.filesDir, sanitizedName)
+                        if (imgFile.exists()) {
+                            val imgCiphertext = imgFile.readBytes()
+                            val imgPlaintext = CryptoManager.decryptXChaCha20Poly1305(imgCiphertext, key)
+                            val b64 = android.util.Base64.encodeToString(imgPlaintext, android.util.Base64.NO_WRAP)
+                            imagesMap[sanitizedName] = b64
+                        }
+                    } catch (e: Exception) {
+                        // ignore image read error
+                    }
+                }
+            }
+
+            val payload = VaultBackupPayload(items = currentItems, imageAssets = imagesMap)
+            val payloadJson = backupPayloadAdapter.toJson(payload)
+            val vaultBytes = payloadJson.toByteArray(Charsets.UTF_8)
             
             // Refresh wallet balance and UTXOs in real-time first
             val currentWallet = _kaspaWallet.value
@@ -227,6 +267,26 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                 wallet = currentWallet,
                 utxos = utxoList
             )
+
+            // Persist the broadcast record to the Room database
+            try {
+                val recordEntity = com.example.db.KfsBroadcastRecordEntity(
+                    id = result.manifest.fileId,
+                    title = "Vault Sync (${currentItems.size} items, ${imagesMap.size} images)",
+                    manifestTxId = result.rootTxId ?: result.manifest.merkleRoot,
+                    merkleRoot = result.manifest.merkleRoot,
+                    chunkTxIdsJson = stringListAdapter.toJson(result.chunkTxIds),
+                    totalChunks = result.manifest.totalChunks,
+                    totalBytes = result.manifest.totalBytes,
+                    totalFeeSompis = result.totalFeeSompis,
+                    timestamp = result.manifest.timestamp,
+                    status = if (result.success) "CONFIRMED" else "REJECTED_OR_NOTICE",
+                    errorMessage = result.errorMessage
+                )
+                db.kfsDao().insertRecord(recordEntity)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
 
             if (result.success && currentWallet != null) {
                 try {
@@ -955,76 +1015,161 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                 val archiveJson = backupArchiveAdapter.toJson(archive)
                 val archiveBytes = archiveJson.toByteArray(Charsets.UTF_8)
 
-                // 1. Primary standard SAF write: openOutputStream with truncate mode "wt"
-                var verifiedBytes: ByteArray? = null
+                // 1. Primary standard SAF write: openOutputStream with "w" mode or default
+                var writeSuccess = false
+                var writeError: Exception? = null
 
                 try {
-                    context.contentResolver.openOutputStream(outputUri, "wt")?.use { stream ->
+                    context.contentResolver.openOutputStream(outputUri, "w")?.use { stream ->
                         stream.write(archiveBytes)
                         stream.flush()
+                        writeSuccess = true
                     }
                 } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-
-                // Verify write immediately by reading back from content resolver
-                verifiedBytes = try {
-                    context.contentResolver.openInputStream(outputUri)?.use { it.readBytes() }
-                } catch (e: Exception) {
-                    null
-                }
-
-                // 2. Fallback: default openOutputStream
-                if (verifiedBytes == null || verifiedBytes.isEmpty()) {
+                    writeError = e
                     try {
                         context.contentResolver.openOutputStream(outputUri)?.use { stream ->
                             stream.write(archiveBytes)
                             stream.flush()
+                            writeSuccess = true
                         }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-
-                    verifiedBytes = try {
-                        context.contentResolver.openInputStream(outputUri)?.use { it.readBytes() }
-                    } catch (e: Exception) {
-                        null
+                    } catch (e2: Exception) {
+                        writeError = e2
                     }
                 }
 
-                // 3. Fallback: ParcelFileDescriptor with AutoCloseOutputStream
-                if (verifiedBytes == null || verifiedBytes.isEmpty()) {
-                    try {
-                        context.contentResolver.openFileDescriptor(outputUri, "rwt")?.let { pfd ->
-                            android.os.ParcelFileDescriptor.AutoCloseOutputStream(pfd).use { stream ->
-                                stream.write(archiveBytes)
-                                stream.flush()
-                            }
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-
-                    verifiedBytes = try {
-                        context.contentResolver.openInputStream(outputUri)?.use { it.readBytes() }
-                    } catch (e: Exception) {
-                        null
-                    }
+                if (!writeSuccess) {
+                    throw writeError ?: IllegalStateException("Storage provider failed to write backup data to selected location.")
                 }
-
-                if (verifiedBytes == null || verifiedBytes.isEmpty()) {
-                    throw IllegalStateException("Storage provider failed to write backup data (resulted in 0 bytes). Please choose another storage directory or folder.")
-                }
-
-                val finalByteCount = verifiedBytes.size.toLong()
 
                 withContext(Dispatchers.Main) {
-                    onSuccess(currentItems.size, imageMap.size, finalByteCount)
+                    onSuccess(currentItems.size, imageMap.size, archiveBytes.size.toLong())
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
                 withContext(Dispatchers.Main) {
                     onError(e.localizedMessage ?: "Failed to export backup")
+                }
+            }
+        }
+    }
+
+    fun saveBackupToDownloads(
+        context: Context,
+        onSuccess: (fileName: String, itemCount: Int, imageCount: Int, byteCount: Long) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val key = derivedKey ?: run {
+            onError("Vault must be unlocked to export backup")
+            return
+        }
+        val priv = privateKey
+        val salt = walletKey
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                var currentItems = _vaultItems.value
+                if (currentItems.isEmpty()) {
+                    val entities = db.vaultDao().getAllEntries()
+                    val loaded = mutableListOf<VaultItem>()
+                    for (entity in entities) {
+                        try {
+                            val decryptedBytes = CryptoManager.decryptXChaCha20Poly1305(entity.ciphertext, key)
+                            val json = String(decryptedBytes, Charsets.UTF_8)
+                            val item = vaultItemAdapter.fromJson(json)
+                            if (item != null) loaded.add(item)
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                    }
+                    currentItems = loaded
+                }
+
+                if (currentItems.isEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        onError("Cannot export backup: Your vault is empty. Please add items or seed phrases first.")
+                    }
+                    return@launch
+                }
+
+                val imageMap = mutableMapOf<String, String>()
+                for (item in currentItems) {
+                    if (!item.imagePath.isNullOrBlank()) {
+                        val sanitizedName = File(item.imagePath).name
+                        val file = File(context.filesDir, sanitizedName)
+                        if (file.exists()) {
+                            val imgBytes = file.readBytes()
+                            val base64 = android.util.Base64.encodeToString(imgBytes, android.util.Base64.NO_WRAP)
+                            imageMap[sanitizedName] = base64
+                        }
+                    }
+                }
+
+                val payload = VaultBackupPayload(
+                    items = currentItems,
+                    imageAssets = imageMap
+                )
+                val payloadJson = backupPayloadAdapter.toJson(payload)
+                val payloadPlaintext = payloadJson.toByteArray(Charsets.UTF_8)
+                val encryptedPayload = CryptoManager.encryptXChaCha20Poly1305(payloadPlaintext, key)
+                val encryptedPayloadBase64 = android.util.Base64.encodeToString(encryptedPayload, android.util.Base64.NO_WRAP)
+
+                val signatureHex = if (priv != null) {
+                    try {
+                        val sig = CryptoManager.sign(encryptedPayload, priv)
+                        CryptoManager.bytesToHex(sig)
+                    } catch (e: Exception) {
+                        null
+                    }
+                } else null
+
+                val archive = EncryptedVaultBackupArchive(
+                    format = "KASCRYPT_ENCRYPTED_VAULT_BACKUP",
+                    version = 1,
+                    timestamp = System.currentTimeMillis(),
+                    itemCount = currentItems.size,
+                    imageCount = imageMap.size,
+                    saltHex = CryptoManager.bytesToHex(salt.toByteArray(Charsets.UTF_8)),
+                    encryptedPayloadBase64 = encryptedPayloadBase64,
+                    signatureHex = signatureHex
+                )
+
+                val archiveJson = backupArchiveAdapter.toJson(archive)
+                val archiveBytes = archiveJson.toByteArray(Charsets.UTF_8)
+                val fileName = "kascrypt_vault_backup_${System.currentTimeMillis()}.json"
+
+                var savedPath = ""
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    val contentValues = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                        put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "application/json")
+                        put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
+                    }
+                    val uri = context.contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+                    if (uri != null) {
+                        context.contentResolver.openOutputStream(uri)?.use { stream ->
+                            stream.write(archiveBytes)
+                            stream.flush()
+                        }
+                        savedPath = "Downloads/$fileName"
+                    }
+                }
+
+                if (savedPath.isBlank()) {
+                    val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                    if (!downloadsDir.exists()) downloadsDir.mkdirs()
+                    val targetFile = File(downloadsDir, fileName)
+                    targetFile.writeBytes(archiveBytes)
+                    savedPath = targetFile.name
+                }
+
+                withContext(Dispatchers.Main) {
+                    onSuccess(savedPath, currentItems.size, imageMap.size, archiveBytes.size.toLong())
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    onError(e.localizedMessage ?: "Failed to save backup to Downloads folder")
                 }
             }
         }
@@ -1262,6 +1407,177 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                     onError(e.localizedMessage ?: "Failed to restore backup")
                 }
             }
+        }
+    }
+
+    fun restoreFromKaspaTxId(
+        manifestTxId: String,
+        onSuccess: (Int, Int) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val key = derivedKey
+        val priv = privateKey
+        val context = getApplication<Application>()
+        if (key == null || priv == null) {
+            onError("Vault is locked. Please unlock your vault before restoring data.")
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            _isRestoringFromKfs.value = true
+            _kfsRestoreProgress.value = 0.05f
+            _kfsRestoreStatus.value = "Initiating KFS retrieval..."
+            try {
+                val (manifest, ciphertext) = KfsEngine.fetchAndReconstructFromKaspa(manifestTxId) { progress, status ->
+                    _kfsRestoreProgress.value = progress
+                    _kfsRestoreStatus.value = status
+                }
+
+                _kfsRestoreStatus.value = "Decrypting XChaCha20-Poly1305 payload with active master key..."
+                
+                val decryptedBytes = try {
+                    CryptoManager.decryptXChaCha20Poly1305(ciphertext, key)
+                } catch (e: Exception) {
+                    throw IllegalStateException("Decryption failed: Key mismatch. Ensure your vault is unlocked with the same master password used during KFS broadcast.")
+                }
+
+                val decryptedText = String(decryptedBytes, Charsets.UTF_8).trim()
+
+                var payload: VaultBackupPayload? = null
+
+                // 1. Try parsing as VaultBackupPayload (items + imageAssets)
+                payload = try {
+                    backupPayloadAdapter.fromJson(decryptedText)
+                } catch (e: Exception) {
+                    null
+                }
+
+                // 2. Try parsing as List<VaultItem>
+                if (payload == null) {
+                    payload = try {
+                        val items = vaultItemListAdapter.fromJson(decryptedText)
+                        if (!items.isNullOrEmpty()) VaultBackupPayload(items = items, imageAssets = emptyMap()) else null
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+
+                if (payload == null) {
+                    throw IllegalStateException("Unrecognized vault payload structure inside decrypted KFS data.")
+                }
+
+                var restoredImages = 0
+                for ((filename, b64Data) in payload.imageAssets) {
+                    try {
+                        if (b64Data.isNotBlank()) {
+                            val sanitizedName = File(filename).name
+                            val imgFile = File(context.filesDir, sanitizedName)
+                            val imgPlaintext = try {
+                                android.util.Base64.decode(b64Data, android.util.Base64.NO_WRAP)
+                            } catch (e: Exception) {
+                                android.util.Base64.decode(b64Data, android.util.Base64.DEFAULT)
+                            }
+                            val imgCiphertext = CryptoManager.encryptXChaCha20Poly1305(imgPlaintext, key)
+                            imgFile.writeBytes(imgCiphertext)
+                            restoredImages++
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+
+                var restoredItems = 0
+                for (item in payload.items) {
+                    val itemId = if (item.id.isBlank()) UUID.randomUUID().toString() else item.id
+                    val itemToSave = item.copy(id = itemId)
+                    val itemJson = vaultItemAdapter.toJson(itemToSave)
+                    val plaintext = itemJson.toByteArray(Charsets.UTF_8)
+                    val encCiphertext = CryptoManager.encryptXChaCha20Poly1305(plaintext, key)
+                    val signature = try {
+                        CryptoManager.sign(encCiphertext, priv)
+                    } catch (e: Exception) {
+                        ByteArray(0)
+                    }
+                    val entity = VaultEntryEntity(
+                        id = itemId,
+                        ciphertext = encCiphertext,
+                        signature = signature
+                    )
+                    db.vaultDao().insertEntry(entity)
+                    restoredItems++
+                }
+
+                // Record this restored manifest into local KFS database if not already present
+                try {
+                    val existing = db.kfsDao().getRecordById(manifest.fileId)
+                    if (existing == null) {
+                        val stringListAdapter = moshi.adapter<List<String>>(Types.newParameterizedType(List::class.java, String::class.java))
+                        val recordEntity = com.example.db.KfsBroadcastRecordEntity(
+                            id = manifest.fileId,
+                            title = "Restored from Kaspa (${restoredItems} items, ${restoredImages} images)",
+                            manifestTxId = manifestTxId,
+                            merkleRoot = manifest.merkleRoot,
+                            chunkTxIdsJson = stringListAdapter.toJson(manifest.chunkTxIds),
+                            totalChunks = manifest.totalChunks,
+                            totalBytes = manifest.totalBytes,
+                            totalFeeSompis = 0L,
+                            timestamp = manifest.timestamp,
+                            status = "RESTORED",
+                            errorMessage = null
+                        )
+                        db.kfsDao().insertRecord(recordEntity)
+                    }
+                } catch (e: Exception) {
+                    // ignore record insert failure
+                }
+
+                loadItems()
+                resetAutoLockTimer()
+
+                withContext(Dispatchers.Main) {
+                    _isRestoringFromKfs.value = false
+                    onSuccess(restoredItems, restoredImages)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    _isRestoringFromKfs.value = false
+                    onError(e.localizedMessage ?: "Failed to recover vault from Kaspa network")
+                }
+            }
+        }
+    }
+
+    fun deleteKfsRecord(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            db.kfsDao().deleteRecord(id)
+        }
+    }
+
+    fun clearAllKfsRecords() {
+        viewModelScope.launch(Dispatchers.IO) {
+            db.kfsDao().clearAllRecords()
+        }
+    }
+
+    fun addManualKfsRecord(title: String, txIdOrMerkleRoot: String) {
+        val cleanId = txIdOrMerkleRoot.trim()
+        if (cleanId.isBlank()) return
+        val id = UUID.randomUUID().toString()
+        val record = KfsBroadcastRecordEntity(
+            id = id,
+            title = if (title.isBlank()) "Saved Merkle Root / TxID" else title.trim(),
+            manifestTxId = cleanId,
+            merkleRoot = cleanId,
+            chunkTxIdsJson = "[]",
+            totalChunks = 1,
+            totalBytes = 0,
+            totalFeeSompis = 0L,
+            timestamp = System.currentTimeMillis(),
+            status = "SAVED",
+            errorMessage = null
+        )
+        viewModelScope.launch(Dispatchers.IO) {
+            db.kfsDao().insertRecord(record)
         }
     }
 }

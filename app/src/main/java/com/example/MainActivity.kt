@@ -60,10 +60,12 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.crypto.BiometricAuthManager
+import com.example.db.KfsBroadcastRecordEntity
 import com.example.model.VaultItem
 import com.example.ui.VaultUiState
 import com.example.ui.VaultViewModel
 import com.example.ui.theme.MyApplicationTheme
+import android.net.Uri
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -641,6 +643,10 @@ fun VaultScreen(viewModel: VaultViewModel) {
         val walletSompis by viewModel.kaspaWalletSompis.collectAsStateWithLifecycle()
         val walletUtxos by viewModel.kaspaWalletUtxos.collectAsStateWithLifecycle()
         val isRefreshingBalance by viewModel.isRefreshingBalance.collectAsStateWithLifecycle()
+        val kfsRecords by viewModel.kfsBroadcastRecords.collectAsStateWithLifecycle()
+        val isRestoringFromKfs by viewModel.isRestoringFromKfs.collectAsStateWithLifecycle()
+        val kfsRestoreProgress by viewModel.kfsRestoreProgress.collectAsStateWithLifecycle()
+        val kfsRestoreStatus by viewModel.kfsRestoreStatus.collectAsStateWithLifecycle()
 
         var showAddDialog by remember { mutableStateOf(false) }
         var showSyncDialog by remember { mutableStateOf(false) }
@@ -1426,200 +1432,9 @@ fun VaultScreen(viewModel: VaultViewModel) {
 
         // Kaspa BlockDAG & KFS Dialog
         if (showSyncDialog) {
-            LaunchedEffect(showSyncDialog) {
-                viewModel.refreshKaspaWalletBalance()
-            }
-
-            val isKfsError = kfsLastResult?.success == false || 
-                (kfsStatus.contains("error", ignoreCase = true) || 
-                 kfsStatus.contains("failed", ignoreCase = true) || 
-                 kfsStatus.contains("rejected", ignoreCase = true))
-
-            AlertDialog(
-                onDismissRequest = { showSyncDialog = false },
-                containerColor = MaterialTheme.colorScheme.background,
-                titleContentColor = if (isKfsError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                title = { 
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = if (isKfsError) Icons.Default.Warning else Icons.Default.CloudUpload,
-                            contentDescription = null,
-                            tint = if (isKfsError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            "Kaspa Storage Sync (KFS)",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isKfsError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onBackground
-                        )
-                    }
-                },
-                text = {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        if (kfsProgress != null && kfsProgress!! < 1.0f) {
-                            Text(
-                                kfsStatus,
-                                color = if (isKfsError) Color(0xFFFF5252) else MaterialTheme.colorScheme.primary,
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            LinearProgressIndicator(
-                                progress = { kfsProgress ?: 0f },
-                                modifier = Modifier.fillMaxWidth(),
-                                color = if (isKfsError) Color(0xFFFF5252) else MaterialTheme.colorScheme.primary
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
-                        } else {
-                            Button(
-                                onClick = { viewModel.broadcastVaultToKaspa() },
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(12.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (isKfsError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                                    contentColor = if (isKfsError) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary
-                                )
-                            ) {
-                                Icon(Icons.Default.CloudUpload, contentDescription = null)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Broadcast Vault to Kaspa (KFS)", fontWeight = FontWeight.Bold)
-                            }
-                        }
-
-                        if (kfsLastResult != null) {
-                            val result = kfsLastResult!!
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            if (!result.success) {
-                                // Red Error Box for Live Node Rejection / Failure
-                                Card(
-                                    shape = RoundedCornerShape(12.dp),
-                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)),
-                                    border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFFFF5252)),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(modifier = Modifier.padding(12.dp)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Default.Cancel, contentDescription = "Error", tint = Color(0xFFFF5252), modifier = Modifier.size(18.dp))
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text(
-                                                "Live Node Broadcast Rejected",
-                                                fontWeight = FontWeight.Bold,
-                                                style = MaterialTheme.typography.labelLarge,
-                                                color = Color(0xFFFF5252)
-                                            )
-                                        }
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        Text(
-                                            "The remote Kaspa node rejected the payload transaction. On-chain broadcasts require confirmed UTXOs to cover network fees.",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onErrorContainer
-                                        )
-                                        if (result.errorMessage != null) {
-                                            Spacer(modifier = Modifier.height(6.dp))
-                                            Text(
-                                                "Node Error: ${result.errorMessage}",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                fontWeight = FontWeight.Bold,
-                                                color = Color(0xFFFF5252)
-                                            )
-                                        }
-                                    }
-                                }
-                            } else {
-                                // Green / Success Box
-                                Card(
-                                    shape = RoundedCornerShape(12.dp),
-                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF70C7BA).copy(alpha = 0.15f)),
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF70C7BA)),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(modifier = Modifier.padding(12.dp)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Default.CheckCircle, contentDescription = "Success", tint = Color(0xFF70C7BA), modifier = Modifier.size(18.dp))
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text("Broadcast Confirmed on Node", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge, color = Color(0xFF70C7BA))
-                                        }
-                                    }
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(10.dp))
-
-                            Card(
-                                shape = RoundedCornerShape(12.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(modifier = Modifier.padding(12.dp)) {
-                                    Text(
-                                        "KFS Merkle Tree:",
-                                        fontWeight = FontWeight.Bold,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = if (!result.success) Color(0xFFFF5252) else MaterialTheme.colorScheme.primary
-                                    )
-                                    Spacer(modifier = Modifier.height(2.dp))
-                                    Text("Root: ${result.manifest.merkleRoot}", style = MaterialTheme.typography.labelSmall)
-                                    Text("Chunks: ${result.manifest.totalChunks} | Size: ${result.manifest.totalBytes} bytes", style = MaterialTheme.typography.labelSmall)
-
-                                    if (result.logs.isNotEmpty()) {
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        Text(
-                                            "Live Execution Logs (${result.logs.size} events):",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                            for (logLine in result.logs) {
-                                                val isLineError = logLine.contains("400", ignoreCase = true) ||
-                                                        logLine.contains("500", ignoreCase = true) ||
-                                                        logLine.contains("error", ignoreCase = true) ||
-                                                        logLine.contains("rejected", ignoreCase = true) ||
-                                                        logLine.contains("failed", ignoreCase = true) ||
-                                                        logLine.contains("notice", ignoreCase = true) ||
-                                                        logLine.contains("exception", ignoreCase = true) ||
-                                                        logLine.contains("no inputs", ignoreCase = true)
-
-                                                Row(verticalAlignment = Alignment.Top) {
-                                                    Text(
-                                                        text = if (isLineError) "✖ " else "• ",
-                                                        style = MaterialTheme.typography.labelSmall,
-                                                        color = if (isLineError) Color(0xFFFF5252) else Color(0xFF70C7BA),
-                                                        fontWeight = FontWeight.Bold
-                                                    )
-                                                    Text(
-                                                        text = logLine,
-                                                        style = MaterialTheme.typography.labelSmall,
-                                                        fontSize = 11.sp,
-                                                        fontWeight = if (isLineError) FontWeight.SemiBold else FontWeight.Normal,
-                                                        color = if (isLineError) Color(0xFFFF5252) else MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                confirmButton = {
-                    TextButton(onClick = { showSyncDialog = false }) {
-                        Text(
-                            "Close",
-                            color = if (isKfsError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
+            KaspaStorageSyncDialog(
+                viewModel = viewModel,
+                onDismiss = { showSyncDialog = false }
             )
         }
 
@@ -2402,7 +2217,7 @@ fun SettingsScreen(
             ) {
                 when (selectedTab) {
                     0 -> {
-                        // Security & Lock Tab
+                            // Security & Lock Tab
                         Text(
                             "Auto-Lock Settings",
                             fontWeight = FontWeight.Bold,
@@ -2840,83 +2655,64 @@ fun SettingsScreen(
                         }
                     }
                     3 -> {
-                        // Live Explorer Tab
-                        Text("Kaspa BlockDAG On-Chain Explorer", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onBackground)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text("Query real-time balances, UTXO entries, and transaction status directly from Kaspa nodes.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Spacer(modifier = Modifier.height(16.dp))
+                        // Clean Explorer Links
+                        val explorerLinks = listOf(
+                            Pair("Kaspa Mainnet Explorer", "https://explorer.kaspa.org")
+                        )
 
-                        OutlinedTextField(
-                            value = inspectAddress,
-                            onValueChange = { inspectAddress = it },
-                            label = { Text("Kaspa Address (kaspa:...)") },
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Button(
-                            onClick = { viewModel.checkKaspaAddressBalance(inspectAddress) },
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier.fillMaxWidth().height(48.dp)
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text("Query Address Balance & UTXOs")
-                        }
-                        if (addressResult != null) {
-                            val isAddrErr = addressResult!!.contains("Error", ignoreCase = true) ||
-                                    addressResult!!.contains("Failed", ignoreCase = true) ||
-                                    addressResult!!.contains("Invalid", ignoreCase = true)
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Card(
-                                shape = RoundedCornerShape(14.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (isAddrErr) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f) else MaterialTheme.colorScheme.surfaceVariant
-                                ),
-                                border = if (isAddrErr) androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFF5252)) else null,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(
-                                    addressResult!!,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = if (isAddrErr) Color(0xFFFF5252) else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(14.dp)
-                                )
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(20.dp))
-                        OutlinedTextField(
-                            value = inspectTxId,
-                            onValueChange = { inspectTxId = it },
-                            label = { Text("Kaspa Transaction Hash") },
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Button(
-                            onClick = { viewModel.checkKaspaTransaction(inspectTxId) },
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier.fillMaxWidth().height(48.dp)
-                        ) {
-                            Text("Query Transaction Status")
-                        }
-                        if (txResult != null) {
-                            val isTxErr = txResult!!.contains("Error", ignoreCase = true) ||
-                                    txResult!!.contains("Failed", ignoreCase = true) ||
-                                    txResult!!.contains("Not found", ignoreCase = true)
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Card(
-                                shape = RoundedCornerShape(14.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (isTxErr) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f) else MaterialTheme.colorScheme.surfaceVariant
-                                ),
-                                border = if (isTxErr) androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFF5252)) else null,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(
-                                    txResult!!,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = if (isTxErr) Color(0xFFFF5252) else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(14.dp)
-                                )
+                            explorerLinks.forEach { (name, url) ->
+                                Card(
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            try {
+                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                                                context.startActivity(intent)
+                                            } catch (e: Exception) {
+                                                Toast.makeText(context, "Could not open link: ${e.message}", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                url,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = Color(0xFF70C7BA),
+                                                textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline
+                                            )
+                                        }
+
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            IconButton(
+                                                onClick = {
+                                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                    clipboard.setPrimaryClip(ClipData.newPlainText(name, url))
+                                                    Toast.makeText(context, "Link copied to clipboard", Toast.LENGTH_SHORT).show()
+                                                },
+                                                modifier = Modifier.size(36.dp)
+                                            ) {
+                                                Icon(Icons.Default.ContentCopy, contentDescription = "Copy Link", modifier = Modifier.size(16.dp), tint = Color(0xFF70C7BA))
+                                            }
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Icon(Icons.Default.OpenInNew, contentDescription = "Open", modifier = Modifier.size(16.dp), tint = Color(0xFF70C7BA))
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -3018,20 +2814,50 @@ fun SettingsScreen(
                                     }
                                 }
                                 Spacer(modifier = Modifier.height(14.dp))
-                                Row(
+                                Column(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    Button(
-                                        onClick = { createBackupLauncher.launch("kascrypt_vault_backup_${System.currentTimeMillis()}.json") },
-                                        enabled = rawVaultItems.isNotEmpty(),
-                                        shape = RoundedCornerShape(12.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black),
-                                        modifier = Modifier.weight(1f).height(48.dp)
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                                     ) {
-                                        Icon(Icons.Default.SaveAlt, contentDescription = null, modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Save Backup File", fontWeight = FontWeight.Bold)
+                                        Button(
+                                            onClick = { createBackupLauncher.launch("kascrypt_vault_backup_${System.currentTimeMillis()}.json") },
+                                            enabled = rawVaultItems.isNotEmpty(),
+                                            shape = RoundedCornerShape(12.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black),
+                                            modifier = Modifier.weight(1f).height(48.dp)
+                                        ) {
+                                            Icon(Icons.Default.SaveAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Save Backup", fontWeight = FontWeight.Bold)
+                                        }
+
+                                        Button(
+                                            onClick = {
+                                                viewModel.saveBackupToDownloads(
+                                                    context = context,
+                                                    onSuccess = { path, items, images, bytes ->
+                                                        backupStatusMessage = "Backup saved to $path! ($items items, $images images, $bytes bytes)"
+                                                        backupErrorMessage = null
+                                                        Toast.makeText(context, "Saved backup to Downloads folder!", Toast.LENGTH_SHORT).show()
+                                                    },
+                                                    onError = { err ->
+                                                        backupErrorMessage = err
+                                                        backupStatusMessage = null
+                                                    }
+                                                )
+                                            },
+                                            enabled = rawVaultItems.isNotEmpty(),
+                                            shape = RoundedCornerShape(12.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA).copy(alpha = 0.2f), contentColor = Color(0xFF70C7BA)),
+                                            modifier = Modifier.weight(1f).height(48.dp)
+                                        ) {
+                                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("To Downloads", fontWeight = FontWeight.Bold)
+                                        }
                                     }
 
                                     OutlinedButton(
@@ -3050,11 +2876,11 @@ fun SettingsScreen(
                                         },
                                         enabled = rawVaultItems.isNotEmpty(),
                                         shape = RoundedCornerShape(12.dp),
-                                        modifier = Modifier.height(48.dp)
+                                        modifier = Modifier.fillMaxWidth().height(44.dp)
                                     ) {
-                                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Share Archive")
+                                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp), tint = Color(0xFF70C7BA))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Share / Send Backup Archive", color = Color(0xFF70C7BA), fontWeight = FontWeight.Medium)
                                     }
                                 }
                             }
@@ -3092,6 +2918,7 @@ fun SettingsScreen(
                                 }
                             }
                         }
+
                     }
                 }
             }
@@ -3194,5 +3021,1071 @@ fun PhotoSourceDialog(
             }
         }
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun KaspaStorageSyncDialog(
+    viewModel: VaultViewModel,
+    onDismiss: () -> Unit
+) {
+    val kfsRecords by viewModel.kfsBroadcastRecords.collectAsStateWithLifecycle()
+    val isRestoringFromKfs by viewModel.isRestoringFromKfs.collectAsStateWithLifecycle()
+    val kfsRestoreProgress by viewModel.kfsRestoreProgress.collectAsStateWithLifecycle()
+    val kfsRestoreStatus by viewModel.kfsRestoreStatus.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) {
+        viewModel.refreshKaspaWalletBalance()
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+    ) {
+        Surface(
+            shape = androidx.compose.ui.graphics.RectangleShape,
+            color = MaterialTheme.colorScheme.background,
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Full Page Header
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = onDismiss) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF70C7BA).copy(alpha = 0.15f))
+                        ) {
+                            Icon(
+                                Icons.Default.CloudSync,
+                                contentDescription = null,
+                                tint = Color(0xFF70C7BA),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                "Kaspa Storage Sync (KFS)",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onBackground
+                            )
+                            Text(
+                                "Decentralized On-Chain Storage & Recovery",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                // Full Page Body Content with 3 Sub-Tabs
+                Box(modifier = Modifier.fillMaxSize()) {
+                    KaspaStorageContent(
+                        viewModel = viewModel,
+                        kfsRecords = kfsRecords,
+                        isRestoringFromKfs = isRestoringFromKfs,
+                        kfsRestoreProgress = kfsRestoreProgress,
+                        kfsRestoreStatus = kfsRestoreStatus,
+                        onDismiss = onDismiss
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun KaspaStorageContent(
+    viewModel: VaultViewModel,
+    kfsRecords: List<KfsBroadcastRecordEntity>,
+    isRestoringFromKfs: Boolean,
+    kfsRestoreProgress: Float,
+    kfsRestoreStatus: String,
+    onDismiss: (() -> Unit)? = null
+) {
+    val context = LocalContext.current
+    var subTab by remember { mutableIntStateOf(0) } // 0: Broadcast, 1: Recover from TxID, 2: History
+
+    val kaspaWallet by viewModel.kaspaWallet.collectAsStateWithLifecycle()
+    val walletBalance by viewModel.kaspaWalletBalance.collectAsStateWithLifecycle()
+    val walletSompis by viewModel.kaspaWalletSompis.collectAsStateWithLifecycle()
+    val walletUtxos by viewModel.kaspaWalletUtxos.collectAsStateWithLifecycle()
+    val isRefreshingBalance by viewModel.isRefreshingBalance.collectAsStateWithLifecycle()
+    val kfsProgress by viewModel.kfsUploadProgress.collectAsStateWithLifecycle()
+    val kfsStatus by viewModel.kfsUploadStatus.collectAsStateWithLifecycle()
+    val kfsLastResult by viewModel.kfsLastResult.collectAsStateWithLifecycle()
+    val rawVaultItems by viewModel.rawVaultItems.collectAsStateWithLifecycle()
+
+    var recoverTxIdInput by remember { mutableStateOf("") }
+    var recoverySuccessMessage by remember { mutableStateOf<String?>(null) }
+    var recoveryErrorMessage by remember { mutableStateOf<String?>(null) }
+    var showAddManualRecordDialog by remember { mutableStateOf(false) }
+    var manualRecordTitle by remember { mutableStateOf("") }
+    var manualRecordId by remember { mutableStateOf("") }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Sub Tab Row
+        TabRow(
+            selectedTabIndex = subTab,
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+            contentColor = Color(0xFF70C7BA)
+        ) {
+            Tab(
+                selected = subTab == 0,
+                onClick = { subTab = 0 },
+                text = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Broadcast", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            )
+            Tab(
+                selected = subTab == 1,
+                onClick = { subTab = 1 },
+                text = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("On-Chain Recovery", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            )
+            Tab(
+                selected = subTab == 2,
+                onClick = { subTab = 2 },
+                text = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.History, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("History (${kfsRecords.size})", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp)
+        ) {
+            when (subTab) {
+                0 -> {
+                    // SUB-TAB 0: BROADCAST
+                    Text(
+                        "Broadcast Encrypted Vault to Kaspa BlockDAG",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "Shards your XChaCha20-Poly1305 encrypted vault payload into deterministic BLAKE2b Merkle chunks and broadcasts payload transactions to the live Kaspa network.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Broadcast Progress or Trigger
+                    val isKfsError = kfsLastResult?.success == false ||
+                            (kfsStatus.contains("error", ignoreCase = true) ||
+                             kfsStatus.contains("failed", ignoreCase = true) ||
+                             kfsStatus.contains("rejected", ignoreCase = true))
+
+                    if (kfsProgress != null && kfsProgress!! < 1.0f) {
+                        Card(
+                            shape = RoundedCornerShape(14.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color(0xFF70C7BA))
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(
+                                        "Broadcasting to Kaspa...",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF70C7BA)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    kfsStatus,
+                                    color = if (isKfsError) Color(0xFFFF5252) else MaterialTheme.colorScheme.onSurface,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                LinearProgressIndicator(
+                                    progress = { kfsProgress ?: 0f },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = if (isKfsError) Color(0xFFFF5252) else Color(0xFF70C7BA)
+                                )
+                            }
+                        }
+                    } else {
+                        Button(
+                            onClick = { viewModel.broadcastVaultToKaspa() },
+                            modifier = Modifier.fillMaxWidth().height(48.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isKfsError) MaterialTheme.colorScheme.error else Color(0xFF70C7BA),
+                                contentColor = if (isKfsError) MaterialTheme.colorScheme.onError else Color.Black
+                            )
+                        ) {
+                            Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Broadcast Vault to Kaspa (KFS)", fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    if (kfsLastResult != null) {
+                        val result = kfsLastResult!!
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        if (!result.success) {
+                            Card(
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)),
+                                border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFFFF5252)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Cancel, contentDescription = "Error", tint = Color(0xFFFF5252), modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Node Broadcast Notice", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge, color = Color(0xFFFF5252))
+                                    }
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        "The remote Kaspa node rejected the payload transaction. On-chain broadcasts require confirmed UTXOs to cover network fees.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                    )
+                                    if (result.errorMessage != null) {
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text("Detail: ${result.errorMessage}", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = Color(0xFFFF5252))
+                                    }
+                                }
+                            }
+                        } else {
+                            Card(
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFF70C7BA).copy(alpha = 0.15f)),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF70C7BA)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.CheckCircle, contentDescription = "Success", tint = Color(0xFF70C7BA), modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Broadcast Confirmed & Saved to History!", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge, color = Color(0xFF70C7BA))
+                                    }
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text("Master Manifest TxID:", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    val mTxId = result.rootTxId ?: result.manifest.fileId
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = Color(0xFF70C7BA).copy(alpha = 0.1f),
+                                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF70C7BA).copy(alpha = 0.3f)),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                try {
+                                                    val explorerUrl = "https://explorer.kaspa.org/txs/$mTxId"
+                                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(explorerUrl))
+                                                    context.startActivity(intent)
+                                                } catch (e: Exception) {
+                                                    Toast.makeText(context, "Could not open explorer: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                Icons.Default.OpenInNew,
+                                                contentDescription = "Open in Explorer",
+                                                tint = Color(0xFF70C7BA),
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                mTxId,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = Color(0xFF70C7BA),
+                                                textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text("Root ID / Merkle Root:", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    val rootId = result.manifest.merkleRoot
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = Color(0xFF70C7BA).copy(alpha = 0.1f),
+                                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF70C7BA).copy(alpha = 0.3f)),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                try {
+                                                    val explorerUrl = "https://explorer.kaspa.org/txs/$rootId"
+                                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(explorerUrl))
+                                                    context.startActivity(intent)
+                                                } catch (e: Exception) {
+                                                    Toast.makeText(context, "Could not open explorer: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                Icons.Default.OpenInNew,
+                                                contentDescription = "Open in Explorer",
+                                                tint = Color(0xFF70C7BA),
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                rootId,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = Color(0xFF70C7BA),
+                                                textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                try {
+                                                    val explorerUrl = "https://explorer.kaspa.org/txs/$mTxId"
+                                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(explorerUrl))
+                                                    context.startActivity(intent)
+                                                } catch (e: Exception) {
+                                                    Toast.makeText(context, "Could not open explorer: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                }
+                                            },
+                                            shape = RoundedCornerShape(8.dp),
+                                            modifier = Modifier.height(36.dp)
+                                        ) {
+                                            Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Explorer", fontSize = 12.sp)
+                                        }
+                                        OutlinedButton(
+                                            onClick = {
+                                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                clipboard.setPrimaryClip(ClipData.newPlainText("Kaspa TxID", mTxId))
+                                                Toast.makeText(context, "Manifest TxID copied to clipboard", Toast.LENGTH_SHORT).show()
+                                            },
+                                            shape = RoundedCornerShape(8.dp),
+                                            modifier = Modifier.height(36.dp)
+                                        ) {
+                                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Copy", fontSize = 12.sp)
+                                        }
+                                        OutlinedButton(
+                                            onClick = { subTab = 2 },
+                                            shape = RoundedCornerShape(8.dp),
+                                            modifier = Modifier.height(36.dp)
+                                        ) {
+                                            Icon(Icons.Default.History, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("History", fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    "KFS Merkle Tree & Shard Proofs:",
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (!result.success) Color(0xFFFF5252) else Color(0xFF70C7BA)
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text("Blake2b Root: ${result.manifest.merkleRoot}", style = MaterialTheme.typography.labelSmall)
+                                Text("Chunks: ${result.manifest.totalChunks} | Total Size: ${result.manifest.totalBytes} bytes", style = MaterialTheme.typography.labelSmall)
+
+                                if (result.logs.isNotEmpty()) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        "Execution Logs (${result.logs.size} events):",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                        for (logLine in result.logs) {
+                                            val isLineError = logLine.contains("400", ignoreCase = true) ||
+                                                    logLine.contains("500", ignoreCase = true) ||
+                                                    logLine.contains("error", ignoreCase = true) ||
+                                                    logLine.contains("rejected", ignoreCase = true) ||
+                                                    logLine.contains("failed", ignoreCase = true) ||
+                                                    logLine.contains("notice", ignoreCase = true)
+
+                                            Row(verticalAlignment = Alignment.Top) {
+                                                Text(
+                                                    text = if (isLineError) "✖ " else "• ",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = if (isLineError) Color(0xFFFF5252) else Color(0xFF70C7BA),
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                Text(
+                                                    text = logLine,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontSize = 11.sp,
+                                                    color = if (isLineError) Color(0xFFFF5252) else MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                1 -> {
+                    // SUB-TAB 1: RECOVER FROM TXID (ON-CHAIN RECOVERY)
+                    Text(
+                        "How to Recover Your File from Kaspa Storage",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Card(
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF70C7BA).copy(alpha = 0.1f)),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF70C7BA).copy(alpha = 0.3f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Info, contentDescription = null, tint = Color(0xFF70C7BA), modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Decentralized Recovery Process:", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge, color = Color(0xFF70C7BA))
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                "1. Paste the Master Manifest Transaction ID (TxID) generated when your vault was broadcast.\n" +
+                                "2. Tap 'Recover Vault from Kaspa'.\n" +
+                                "3. The engine fetches the manifest and all sharded chunk transactions across the Kaspa BlockDAG.\n" +
+                                "4. BLAKE2b Merkle root cryptographic integrity is verified for zero tampering.\n" +
+                                "5. The payload is decrypted on-device with your master key and imported directly into your vault.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    if (recoverySuccessMessage != null) {
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF70C7BA).copy(alpha = 0.2f)),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF70C7BA)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF70C7BA))
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(recoverySuccessMessage!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+
+                    if (recoveryErrorMessage != null) {
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFF5252)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Error, contentDescription = null, tint = Color(0xFFFF5252))
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(recoveryErrorMessage!!, style = MaterialTheme.typography.bodySmall, color = Color(0xFFFF5252))
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+
+                    // Input TxID Form
+                    OutlinedTextField(
+                        value = recoverTxIdInput,
+                        onValueChange = { 
+                            recoverTxIdInput = it
+                            recoveryErrorMessage = null
+                        },
+                        label = { Text("Kaspa Manifest Transaction ID") },
+                        placeholder = { Text("e.g. 9b7a1f2c4d... or KFS manifest TxID") },
+                        trailingIcon = {
+                            Row {
+                                if (recoverTxIdInput.isNotEmpty()) {
+                                    IconButton(onClick = { recoverTxIdInput = "" }) {
+                                        Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                                IconButton(
+                                    onClick = {
+                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                        val clip = clipboard.primaryClip
+                                        if (clip != null && clip.itemCount > 0) {
+                                            val pasted = clip.getItemAt(0).text?.toString() ?: ""
+                                            recoverTxIdInput = pasted.trim()
+                                        }
+                                    }
+                                ) {
+                                    Icon(Icons.Default.ContentPaste, contentDescription = "Paste", tint = Color(0xFF70C7BA), modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    if (isRestoringFromKfs) {
+                        Card(
+                            shape = RoundedCornerShape(14.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color(0xFF70C7BA))
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text("Reconstructing from Kaspa BlockDAG...", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge, color = Color(0xFF70C7BA))
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(kfsRestoreStatus, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Spacer(modifier = Modifier.height(8.dp))
+                                LinearProgressIndicator(
+                                    progress = { kfsRestoreProgress },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = Color(0xFF70C7BA)
+                                )
+                            }
+                        }
+                    } else {
+                        Button(
+                            onClick = {
+                                val txIdToUse = recoverTxIdInput.trim()
+                                if (txIdToUse.isEmpty()) {
+                                    recoveryErrorMessage = "Please enter or paste a valid Kaspa Manifest TxID."
+                                    return@Button
+                                }
+                                recoveryErrorMessage = null
+                                recoverySuccessMessage = null
+                                viewModel.restoreFromKaspaTxId(
+                                    manifestTxId = txIdToUse,
+                                    onSuccess = { itemsCount, imagesCount ->
+                                        recoverySuccessMessage = "Successfully recovered and decrypted $itemsCount vault entries and $imagesCount encrypted photos from Kaspa BlockDAG!"
+                                        recoveryErrorMessage = null
+                                    },
+                                    onError = { err ->
+                                        recoveryErrorMessage = err
+                                        recoverySuccessMessage = null
+                                    }
+                                )
+                            },
+                            enabled = recoverTxIdInput.isNotBlank(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black),
+                            modifier = Modifier.fillMaxWidth().height(48.dp)
+                        ) {
+                            Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Download & Reconstruct from Kaspa", fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    // Quick-Pick from broadcast history if available
+                    if (kfsRecords.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(20.dp))
+                        Text(
+                            "Or Pick from Your Persistent Broadcast History:",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            kfsRecords.take(3).forEach { record ->
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                                    onClick = {
+                                        recoverTxIdInput = record.manifestTxId
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(record.title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                                            Text(
+                                                "${record.manifestTxId.take(16)}... • ${record.totalChunks} chunks • ${SimpleDateFormat("MMM dd, HH:mm", Locale.getDefault()).format(Date(record.timestamp))}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        Icon(Icons.Default.ArrowForward, contentDescription = "Select", tint = Color(0xFF70C7BA), modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                2 -> {
+                    // SUB-TAB 2: BROADCAST HISTORY (PERSISTENT ON-CHAIN IDS)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Persistent Broadcast Records",
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onBackground
+                            )
+                            Text(
+                                "Merkle Roots & TxIDs are saved locally in Room SQLite database",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedButton(
+                                onClick = {
+                                    manualRecordTitle = ""
+                                    manualRecordId = ""
+                                    showAddManualRecordDialog = true
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.height(32.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                            ) {
+                                Icon(Icons.Default.BookmarkAdd, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color(0xFF70C7BA))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Save Root ID", fontSize = 11.sp, color = Color(0xFF70C7BA))
+                            }
+
+                            if (kfsRecords.isNotEmpty()) {
+                                Spacer(modifier = Modifier.width(4.dp))
+                                TextButton(
+                                    onClick = { viewModel.clearAllKfsRecords() },
+                                    modifier = Modifier.height(32.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                ) {
+                                    Icon(Icons.Default.DeleteSweep, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.error)
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    Text("Clear All", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    if (kfsRecords.isEmpty()) {
+                        Card(
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(24.dp).fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Icon(Icons.Default.CloudQueue, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f), modifier = Modifier.size(48.dp))
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text("No Broadcast Records Yet", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    "When you broadcast your encrypted vault to Kaspa, each Master Manifest TxID is permanently stored on this page for instant recovery and auditing.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                            }
+                        }
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            kfsRecords.forEach { record ->
+                                Card(
+                                    shape = RoundedCornerShape(16.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF70C7BA).copy(alpha = 0.25f)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(14.dp)) {
+                                        // Top Row: Title + Status Chip + Delete
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                                Icon(Icons.Default.Shield, contentDescription = null, tint = Color(0xFF70C7BA), modifier = Modifier.size(18.dp))
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(record.title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                                            }
+
+                                            // Status Badge
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = when (record.status.uppercase()) {
+                                                    "CONFIRMED" -> Color(0xFF70C7BA).copy(alpha = 0.2f)
+                                                    "RESTORED" -> Color(0xFF4CAF50).copy(alpha = 0.2f)
+                                                    else -> MaterialTheme.colorScheme.error.copy(alpha = 0.2f)
+                                                }
+                                            ) {
+                                                Text(
+                                                    record.status,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = when (record.status.uppercase()) {
+                                                        "CONFIRMED" -> Color(0xFF70C7BA)
+                                                        "RESTORED" -> Color(0xFF4CAF50)
+                                                        else -> MaterialTheme.colorScheme.error
+                                                    }
+                                                )
+                                            }
+
+                                            IconButton(
+                                                onClick = { viewModel.deleteKfsRecord(record.id) },
+                                                modifier = Modifier.size(28.dp)
+                                            ) {
+                                                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f), modifier = Modifier.size(16.dp))
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.height(8.dp))
+
+                                        // Manifest TxID
+                                        Text("Master Manifest TxID (Tap to view on Kaspa Explorer):", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = Color(0xFF70C7BA).copy(alpha = 0.08f),
+                                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF70C7BA).copy(alpha = 0.25f)),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    try {
+                                                        val explorerUrl = "https://explorer.kaspa.org/txs/${record.manifestTxId}"
+                                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(explorerUrl))
+                                                        context.startActivity(intent)
+                                                    } catch (e: Exception) {
+                                                        Toast.makeText(context, "Could not open explorer: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                                    Icon(
+                                                        Icons.Default.OpenInNew,
+                                                        contentDescription = "Open in Explorer",
+                                                        tint = Color(0xFF70C7BA),
+                                                        modifier = Modifier.size(14.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text(
+                                                        record.manifestTxId,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = Color(0xFF70C7BA),
+                                                        textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline
+                                                    )
+                                                }
+                                                IconButton(
+                                                    onClick = {
+                                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                        clipboard.setPrimaryClip(ClipData.newPlainText("Kaspa TxID", record.manifestTxId))
+                                                        Toast.makeText(context, "Manifest TxID copied", Toast.LENGTH_SHORT).show()
+                                                    },
+                                                    modifier = Modifier.size(24.dp)
+                                                ) {
+                                                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy TxID", modifier = Modifier.size(14.dp), tint = Color(0xFF70C7BA))
+                                                }
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.height(6.dp))
+
+                                        // Merkle Root / Root ID
+                                        Text("Root ID / BLAKE2b Merkle Root (Tap to view on Kaspa Explorer):", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = Color(0xFF70C7BA).copy(alpha = 0.08f),
+                                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF70C7BA).copy(alpha = 0.25f)),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    try {
+                                                        val explorerUrl = "https://explorer.kaspa.org/txs/${record.merkleRoot}"
+                                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(explorerUrl))
+                                                        context.startActivity(intent)
+                                                    } catch (e: Exception) {
+                                                        Toast.makeText(context, "Could not open explorer: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                                    Icon(
+                                                        Icons.Default.OpenInNew,
+                                                        contentDescription = "Open in Explorer",
+                                                        tint = Color(0xFF70C7BA),
+                                                        modifier = Modifier.size(14.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text(
+                                                        record.merkleRoot,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = Color(0xFF70C7BA),
+                                                        textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline
+                                                    )
+                                                }
+                                                IconButton(
+                                                    onClick = {
+                                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                        clipboard.setPrimaryClip(ClipData.newPlainText("Kaspa Root ID", record.merkleRoot))
+                                                        Toast.makeText(context, "Root ID copied", Toast.LENGTH_SHORT).show()
+                                                    },
+                                                    modifier = Modifier.size(24.dp)
+                                                ) {
+                                                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy Root ID", modifier = Modifier.size(14.dp), tint = Color(0xFF70C7BA))
+                                                }
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            "Chunks: ${record.totalChunks} | Payload: ${record.totalBytes} B | Fee: ${record.totalFeeSompis} Sompis",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Text(
+                                            "Timestamp: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(record.timestamp))}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                        )
+
+                                        Spacer(modifier = Modifier.height(10.dp))
+
+                                        // Action buttons
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Button(
+                                                onClick = {
+                                                    recoverTxIdInput = record.manifestTxId
+                                                    subTab = 1
+                                                },
+                                                shape = RoundedCornerShape(10.dp),
+                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black),
+                                                modifier = Modifier.weight(1f).height(38.dp)
+                                            ) {
+                                                Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(14.dp))
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("Restore Vault from this ID", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                            }
+
+                                            OutlinedButton(
+                                                onClick = {
+                                                    try {
+                                                        val explorerUrl = "https://explorer.kaspa.org/txs/${record.manifestTxId}"
+                                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(explorerUrl))
+                                                        context.startActivity(intent)
+                                                    } catch (e: Exception) {
+                                                        Toast.makeText(context, "Could not open explorer: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                },
+                                                shape = RoundedCornerShape(10.dp),
+                                                modifier = Modifier.height(38.dp)
+                                            ) {
+                                                Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(14.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Explorer", fontSize = 12.sp)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (showAddManualRecordDialog) {
+            AlertDialog(
+                onDismissRequest = { showAddManualRecordDialog = false },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.BookmarkAdd, contentDescription = null, tint = Color(0xFF70C7BA), modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Save Merkle Root to History", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    }
+                },
+                text = {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            "Add any existing Merkle Root or Master Manifest TxID to your local persistent database for instant recovery and tracking.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
+                        OutlinedTextField(
+                            value = manualRecordTitle,
+                            onValueChange = { manualRecordTitle = it },
+                            label = { Text("Record Label / Title (Optional)") },
+                            placeholder = { Text("e.g., Cold Storage Backup #2") },
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = manualRecordId,
+                            onValueChange = { manualRecordId = it },
+                            label = { Text("Merkle Root or Manifest TxID *") },
+                            placeholder = { Text("64-char Hex Hash or Root ID") },
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                            trailingIcon = {
+                                IconButton(onClick = {
+                                    try {
+                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                        val clip = clipboard.primaryClip
+                                        if (clip != null && clip.itemCount > 0) {
+                                            manualRecordId = clip.getItemAt(0).text.toString().trim()
+                                        }
+                                    } catch (e: Exception) {
+                                        // ignore
+                                    }
+                                }) {
+                                    Icon(Icons.Default.ContentPaste, contentDescription = "Paste", tint = Color(0xFF70C7BA), modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (manualRecordId.isNotBlank()) {
+                                viewModel.addManualKfsRecord(
+                                    title = if (manualRecordTitle.isBlank()) "Saved Merkle Root" else manualRecordTitle.trim(),
+                                    txIdOrMerkleRoot = manualRecordId.trim()
+                                )
+                                showAddManualRecordDialog = false
+                                Toast.makeText(context, "Merkle Root permanently saved to history!", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        enabled = manualRecordId.isNotBlank(),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black)
+                    ) {
+                        Text("SAVE RECORD", fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showAddManualRecordDialog = false }) {
+                        Text("Cancel", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            )
+        }
+    }
 }
 

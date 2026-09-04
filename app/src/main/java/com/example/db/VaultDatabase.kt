@@ -8,6 +8,9 @@ import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
+import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "vault_entries")
 data class VaultEntryEntity(
@@ -20,6 +23,21 @@ data class VaultEntryEntity(
 data class AppConfigEntity(
     @PrimaryKey val key: String,
     val value: String
+)
+
+@Entity(tableName = "kfs_broadcast_records")
+data class KfsBroadcastRecordEntity(
+    @PrimaryKey val id: String,
+    val title: String,
+    val manifestTxId: String,
+    val merkleRoot: String,
+    val chunkTxIdsJson: String,
+    val totalChunks: Int,
+    val totalBytes: Int,
+    val totalFeeSompis: Long,
+    val timestamp: Long,
+    val status: String,
+    val errorMessage: String? = null
 )
 
 @Dao
@@ -46,7 +64,56 @@ interface VaultDao {
     suspend fun deleteConfig(key: String)
 }
 
-@Database(entities = [VaultEntryEntity::class, AppConfigEntity::class], version = 1, exportSchema = false)
+@Dao
+interface KfsDao {
+    @Query("SELECT * FROM kfs_broadcast_records ORDER BY timestamp DESC")
+    fun getAllRecords(): Flow<List<KfsBroadcastRecordEntity>>
+
+    @Query("SELECT * FROM kfs_broadcast_records WHERE id = :id LIMIT 1")
+    suspend fun getRecordById(id: String): KfsBroadcastRecordEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertRecord(record: KfsBroadcastRecordEntity)
+
+    @Query("DELETE FROM kfs_broadcast_records WHERE id = :id")
+    suspend fun deleteRecord(id: String)
+
+    @Query("DELETE FROM kfs_broadcast_records")
+    suspend fun clearAllRecords()
+}
+
+@Database(
+    entities = [VaultEntryEntity::class, AppConfigEntity::class, KfsBroadcastRecordEntity::class],
+    version = 2,
+    exportSchema = false
+)
 abstract class VaultDatabase : RoomDatabase() {
     abstract fun vaultDao(): VaultDao
+    abstract fun kfsDao(): KfsDao
+
+    companion object {
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `kfs_broadcast_records` (
+                        `id` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `manifestTxId` TEXT NOT NULL,
+                        `merkleRoot` TEXT NOT NULL,
+                        `chunkTxIdsJson` TEXT NOT NULL,
+                        `totalChunks` INTEGER NOT NULL,
+                        `totalBytes` INTEGER NOT NULL,
+                        `totalFeeSompis` INTEGER NOT NULL,
+                        `timestamp` INTEGER NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `errorMessage` TEXT,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+    }
 }
+
