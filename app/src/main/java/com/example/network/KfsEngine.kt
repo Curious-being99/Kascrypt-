@@ -662,8 +662,8 @@ object KfsEngine {
 
         val schnorrSig = com.example.crypto.KaspaWalletManager.signSchnorr(sighash, wallet.privateKeyHex)
         val schnorrSigHex = CryptoManager.bytesToHex(schnorrSig)
-        // Kaspa P2PK opcode 0x41 (65 bytes) + 64-byte Schnorr signature + 0x01 (SIGHASH_ALL)
-        val signatureScript = "41" + schnorrSigHex + "01"
+        // Kaspa canonical push of 64-byte Schnorr signature (OP_DATA_64 = 0x40)
+        val signatureScript = "40" + schnorrSigHex
 
         val signedInput = initialInput.copy(signatureScript = signatureScript)
 
