@@ -199,6 +199,17 @@ object KaspaWalletManager {
         return out.toByteArray()
     }
 
+    private fun bytesFromInt32(value: BigInteger): ByteArray {
+        val raw = value.toByteArray()
+        val out = ByteArray(32)
+        if (raw.size >= 32) {
+            System.arraycopy(raw, raw.size - 32, out, 0, 32)
+        } else {
+            System.arraycopy(raw, 0, out, 32 - raw.size, raw.size)
+        }
+        return out
+    }
+
     private fun bip340TaggedHash(tag: String, data: ByteArray): ByteArray {
         val md = MessageDigest.getInstance("SHA-256")
         val tagHash = md.digest(tag.toByteArray(Charsets.UTF_8))
@@ -228,14 +239,15 @@ object KaspaWalletManager {
         if (p.affineYCoord.toBigInteger().testBit(0)) {
             d = secp256k1Curve.n.subtract(d)
         }
-        val pX = p.affineXCoord.encoded
+        val pX = bytesFromInt32(p.affineXCoord.toBigInteger())
 
         // Deterministic nonce k generation per BIP-340 using tagged hash
         val aux = ByteArray(32) // 32 zero bytes for deterministic aux
         val t = bip340TaggedHash("BIP0340/aux", aux)
+        val dBytes = bytesFromInt32(d)
         val maskedKey = ByteArray(32)
         for (i in 0 until 32) {
-            maskedKey[i] = (privKeyPadded[i].toInt() xor t[i].toInt()).toByte()
+            maskedKey[i] = (dBytes[i].toInt() xor t[i].toInt()).toByte()
         }
 
         val nonceData = ByteArray(32 + 32 + msgHash.size)
@@ -253,7 +265,7 @@ object KaspaWalletManager {
             rPoint = secp256k1Curve.g.multiply(k).normalize()
         }
 
-        val rX = rPoint.affineXCoord.encoded
+        val rX = bytesFromInt32(rPoint.affineXCoord.toBigInteger())
 
         // e = BIP0340/challenge(rX || pX || msgHash) mod n
         val challengeData = ByteArray(32 + 32 + msgHash.size)
@@ -267,19 +279,44 @@ object KaspaWalletManager {
         // s = (k + e * d) mod n
         val s = k.add(e.multiply(d)).mod(secp256k1Curve.n)
 
-        // Result 64 bytes: rX (32 bytes) + s (32 bytes padded)
-        val sBytes = s.toByteArray()
-        val sPadded = ByteArray(32)
-        if (sBytes.size > 32) {
-            System.arraycopy(sBytes, sBytes.size - 32, sPadded, 0, 32)
-        } else {
-            System.arraycopy(sBytes, 0, sPadded, 32 - sBytes.size, sBytes.size)
-        }
+        val sPadded = bytesFromInt32(s)
 
         val result = ByteArray(64)
         System.arraycopy(rX, 0, result, 0, 32)
         System.arraycopy(sPadded, 0, result, 32, 32)
         return result
+    }
+
+    /**
+     * Verify BIP-340 / Kaspa Secp256k1 Schnorr signature for a 32-byte message hash
+     */
+    fun verifySchnorr(msgHash: ByteArray, pubKeyX: ByteArray, signature: ByteArray): Boolean {
+        if (signature.size != 64 || pubKeyX.size != 32 || msgHash.size != 32) return false
+        val rX = signature.copyOfRange(0, 32)
+        val sBytes = signature.copyOfRange(32, 64)
+        val s = BigInteger(1, sBytes)
+        if (s >= secp256k1Curve.n || s == BigInteger.ZERO) return false
+
+        val pXCoord = secp256k1Curve.curve.fromBigInteger(BigInteger(1, pubKeyX))
+        val ySq = pXCoord.square().multiply(pXCoord).add(secp256k1Curve.curve.b)
+        val y = ySq.sqrt() ?: return false
+        val pY = if (y.toBigInteger().testBit(0)) y.negate() else y
+        val p = secp256k1Curve.curve.createPoint(pXCoord.toBigInteger(), pY.toBigInteger())
+
+        val challengeData = ByteArray(32 + 32 + 32)
+        System.arraycopy(rX, 0, challengeData, 0, 32)
+        System.arraycopy(pubKeyX, 0, challengeData, 32, 32)
+        System.arraycopy(msgHash, 0, challengeData, 64, 32)
+
+        val eBytes = bip340TaggedHash("BIP0340/challenge", challengeData)
+        val e = BigInteger(1, eBytes).mod(secp256k1Curve.n)
+
+        // R = s * G - e * P
+        val rPoint = secp256k1Curve.g.multiply(s).subtract(p.multiply(e)).normalize()
+        if (rPoint.isInfinity) return false
+        if (rPoint.affineYCoord.toBigInteger().testBit(0)) return false // Must have even Y
+        val computedRx = bytesFromInt32(rPoint.affineXCoord.toBigInteger())
+        return computedRx.contentEquals(rX)
     }
 
     // --- BIP-39 & BIP-32 Implementation ---

@@ -2249,6 +2249,7 @@ fun SettingsScreen(
     val networkStatus by viewModel.kaspaNetworkStatus.collectAsStateWithLifecycle()
     val addressResult by viewModel.addressLookupResult.collectAsStateWithLifecycle()
     val txResult by viewModel.txLookupResult.collectAsStateWithLifecycle()
+    val rawVaultItems by viewModel.rawVaultItems.collectAsStateWithLifecycle()
 
     var masterPassword by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
@@ -2270,14 +2271,14 @@ fun SettingsScreen(
     var backupErrorMessage by remember { mutableStateOf<String?>(null) }
 
     val createBackupLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/json")
+        contract = ActivityResultContracts.CreateDocument("application/octet-stream")
     ) { uri ->
         if (uri != null) {
             viewModel.exportEncryptedBackup(
                 context = context,
                 outputUri = uri,
                 onSuccess = { items, images, bytes ->
-                    backupStatusMessage = "Backup exported successfully! $items vault entries, $images encrypted images ($bytes bytes)."
+                    backupStatusMessage = "Backup saved to device successfully! $items vault entries, $images encrypted images ($bytes bytes written)."
                     backupErrorMessage = null
                 },
                 onError = { err ->
@@ -2991,6 +2992,31 @@ fun SettingsScreen(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (rawVaultItems.isNotEmpty()) Color(0xFF70C7BA).copy(alpha = 0.12f) else MaterialTheme.colorScheme.error.copy(alpha = 0.1f),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            if (rawVaultItems.isNotEmpty()) Icons.Default.CheckCircle else Icons.Default.Info,
+                                            contentDescription = null,
+                                            tint = if (rawVaultItems.isNotEmpty()) Color(0xFF70C7BA) else MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            if (rawVaultItems.isNotEmpty()) "Vault contents: ${rawVaultItems.size} entries ready for encrypted backup" else "Vault is currently empty (0 entries). Add items before backing up.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = if (rawVaultItems.isNotEmpty()) Color(0xFF70C7BA) else MaterialTheme.colorScheme.error
+                                        )
+                                    }
+                                }
                                 Spacer(modifier = Modifier.height(14.dp))
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -2998,6 +3024,7 @@ fun SettingsScreen(
                                 ) {
                                     Button(
                                         onClick = { createBackupLauncher.launch("kascrypt_vault_backup_${System.currentTimeMillis()}.kascrypt") },
+                                        enabled = rawVaultItems.isNotEmpty(),
                                         shape = RoundedCornerShape(12.dp),
                                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black),
                                         modifier = Modifier.weight(1f).height(48.dp)
@@ -3012,15 +3039,16 @@ fun SettingsScreen(
                                             val shareUri = viewModel.createShareableBackupFile(context)
                                             if (shareUri != null) {
                                                 val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                                    type = "application/json"
+                                                    type = "application/octet-stream"
                                                     putExtra(Intent.EXTRA_STREAM, shareUri)
                                                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                                 }
                                                 context.startActivity(Intent.createChooser(shareIntent, "Share Encrypted Vault Backup"))
                                             } else {
-                                                backupErrorMessage = "Vault must be unlocked to share backup"
+                                                backupErrorMessage = "Vault must contain items and be unlocked to share backup"
                                             }
                                         },
+                                        enabled = rawVaultItems.isNotEmpty(),
                                         shape = RoundedCornerShape(12.dp),
                                         modifier = Modifier.height(48.dp)
                                     ) {

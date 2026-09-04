@@ -134,6 +134,21 @@ object CryptoManager {
     }
 
     fun sign(data: ByteArray, privateKey: PrivateKey): ByteArray {
+        val candidateProviders = listOf(
+            BouncyCastlePQCProvider.PROVIDER_NAME,
+            BouncyCastleProvider.PROVIDER_NAME,
+            null
+        )
+        for (provider in candidateProviders) {
+            try {
+                val sig = if (provider != null) Signature.getInstance(privateKey.algorithm, provider) else Signature.getInstance(privateKey.algorithm)
+                sig.initSign(privateKey)
+                sig.update(data)
+                return sig.sign()
+            } catch (e: Throwable) {
+                // Continue trying next provider
+            }
+        }
         val sig = Signature.getInstance(privateKey.algorithm)
         sig.initSign(privateKey)
         sig.update(data)
@@ -141,6 +156,21 @@ object CryptoManager {
     }
 
     fun verify(data: ByteArray, signature: ByteArray, publicKey: PublicKey): Boolean {
+        val candidateProviders = listOf(
+            BouncyCastlePQCProvider.PROVIDER_NAME,
+            BouncyCastleProvider.PROVIDER_NAME,
+            null
+        )
+        for (provider in candidateProviders) {
+            try {
+                val sig = if (provider != null) Signature.getInstance(publicKey.algorithm, provider) else Signature.getInstance(publicKey.algorithm)
+                sig.initVerify(publicKey)
+                sig.update(data)
+                return sig.verify(signature)
+            } catch (e: Throwable) {
+                // Continue trying next provider
+            }
+        }
         val sig = Signature.getInstance(publicKey.algorithm)
         sig.initVerify(publicKey)
         sig.update(data)

@@ -159,6 +159,7 @@ object KfsEngine {
                         hasNodeRejection = true
                         lastErrorMessage = response.error
                         logs.add("Node error: ${response.error}")
+                        break
                     } else if (response.transactionId != null) {
                         logs.add("Chunk #${chunk.index + 1} TxId: ${response.transactionId}")
                         successfulBroadcasts++
@@ -170,46 +171,50 @@ object KfsEngine {
                     val err = e.response()?.errorBody()?.string() ?: e.message()
                     lastErrorMessage = "HTTP ${e.code()}: $err"
                     logs.add("Node response (${e.code()}): $err")
+                    break
                 } catch (e: Exception) {
                     hasNodeRejection = true
                     val msg = e.message ?: "Network error"
                     lastErrorMessage = msg
                     logs.add("Network transmission error: $msg")
+                    break
                 }
             }
 
-            // Finalize Master KFS Transaction
+            // Finalize Master KFS Transaction only if all chunks succeeded
             val manifestJson = manifestAdapter.toJson(manifest)
             val manifestHex = CryptoManager.bytesToHex(manifestJson.toByteArray(Charsets.UTF_8))
             val masterTxId = manifest.merkleRoot
 
             logs.add("Computed KFS Merkle Root: ${manifest.merkleRoot}")
 
-            try {
-                val masterTx = buildKaspaTransaction(
-                    payloadHex = manifestHex,
-                    wallet = wallet,
-                    utxos = utxos
-                )
-                val masterRequest = KaspaSubmitTransactionRequest(transaction = masterTx)
-                val masterResponse = KaspaNetwork.api.submitTransaction(masterRequest)
-                if (masterResponse.error != null) {
+            if (!hasNodeRejection && successfulBroadcasts == chunks.size) {
+                try {
+                    val masterTx = buildKaspaTransaction(
+                        payloadHex = manifestHex,
+                        wallet = wallet,
+                        utxos = utxos
+                    )
+                    val masterRequest = KaspaSubmitTransactionRequest(transaction = masterTx)
+                    val masterResponse = KaspaNetwork.api.submitTransaction(masterRequest)
+                    if (masterResponse.error != null) {
+                        hasNodeRejection = true
+                        lastErrorMessage = masterResponse.error
+                        logs.add("Master manifest node error: ${masterResponse.error}")
+                    } else if (masterResponse.transactionId != null) {
+                        logs.add("Master manifest TxId: ${masterResponse.transactionId}")
+                    }
+                } catch (e: retrofit2.HttpException) {
                     hasNodeRejection = true
-                    lastErrorMessage = masterResponse.error
-                    logs.add("Master manifest node error: ${masterResponse.error}")
-                } else if (masterResponse.transactionId != null) {
-                    logs.add("Master manifest TxId: ${masterResponse.transactionId}")
+                    val err = e.response()?.errorBody()?.string() ?: e.message()
+                    lastErrorMessage = "HTTP ${e.code()}: $err"
+                    logs.add("Master manifest sync notice: HTTP ${e.code()} - $err")
+                } catch (e: Exception) {
+                    hasNodeRejection = true
+                    val msg = e.message ?: "Connection error"
+                    lastErrorMessage = msg
+                    logs.add("Master manifest sync notice: $msg")
                 }
-            } catch (e: retrofit2.HttpException) {
-                hasNodeRejection = true
-                val err = e.response()?.errorBody()?.string() ?: e.message()
-                lastErrorMessage = "HTTP ${e.code()}: $err"
-                logs.add("Master manifest sync notice: HTTP ${e.code()} - $err")
-            } catch (e: Exception) {
-                hasNodeRejection = true
-                val msg = e.message ?: "Connection error"
-                lastErrorMessage = msg
-                logs.add("Master manifest sync notice: $msg")
             }
 
             val isOverallSuccess = !hasNodeRejection && successfulBroadcasts == chunks.size
@@ -338,8 +343,13 @@ object KfsEngine {
         stream.write(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(gas).array())
 
         // 14. Payload Hash (32 bytes)
-        val payloadBytes = if (!payloadHex.isNullOrEmpty()) CryptoManager.hexToBytes(payloadHex) else ByteArray(0)
-        val payloadHash = CryptoManager.hashBlake2bPersonalized(payloadBytes, tag)
+        val isNative = subnetworkBytes.all { it == 0.toByte() }
+        val payloadHash = if (isNative) {
+            ByteArray(32)
+        } else {
+            val payloadBytes = if (!payloadHex.isNullOrEmpty()) CryptoManager.hexToBytes(payloadHex) else ByteArray(0)
+            CryptoManager.hashBlake2bPersonalized(payloadBytes, tag)
+        }
         stream.write(payloadHash)
 
         // 15. SigHashType (1 byte)

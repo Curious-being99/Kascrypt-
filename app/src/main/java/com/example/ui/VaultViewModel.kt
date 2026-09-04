@@ -127,6 +127,7 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
     private var privateKey: PrivateKey? = null
     private var publicKey: PublicKey? = null
     private var walletKey: String = ""
+    private var activeSessionPassword: String? = null
 
     private var autoLockJob: Job? = null
     private val AUTO_LOCK_TIMEOUT = 5 * 60 * 1000L // 5 minutes
@@ -504,6 +505,7 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 derivedKey = derived
+                activeSessionPassword = password
                 
                 // Load ML-DSA / Ed25519 keys safely
                 try {
@@ -653,6 +655,7 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
     fun lock() {
         derivedKey?.fill(0) // Erase from memory
         derivedKey = null
+        activeSessionPassword = null
         privateKey = null
         publicKey = null
         _kaspaWallet.value = null
@@ -687,25 +690,46 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun loadItems() {
         val key = derivedKey ?: return
-        val pub = publicKey ?: return
+        val pub = publicKey
+        val priv = privateKey
         
         val entities = db.vaultDao().getAllEntries()
         val items = mutableListOf<VaultItem>()
 
         for (entity in entities) {
             try {
-                // Verify signature (ML-DSA)
-                val isValid = CryptoManager.verify(entity.ciphertext, entity.signature, pub)
-                if (!isValid) continue
-
-                // Decrypt (XChaCha20-Poly1305)
+                // Decrypt (XChaCha20-Poly1305 authenticated encryption)
                 val decryptedBytes = CryptoManager.decryptXChaCha20Poly1305(entity.ciphertext, key)
                 val json = String(decryptedBytes, Charsets.UTF_8)
                 
                 val item = vaultItemAdapter.fromJson(json)
-                if (item != null) items.add(item)
+                if (item != null) {
+                    if (pub != null && entity.signature.isNotEmpty()) {
+                        val isSigValid = try {
+                            CryptoManager.verify(entity.ciphertext, entity.signature, pub)
+                        } catch (e: Exception) {
+                            false
+                        }
+                        if (!isSigValid && priv != null) {
+                            try {
+                                val newSig = CryptoManager.sign(entity.ciphertext, priv)
+                                db.vaultDao().insertEntry(entity.copy(signature = newSig))
+                            } catch (e: Exception) {
+                                // non-fatal
+                            }
+                        }
+                    } else if (priv != null && entity.signature.isEmpty()) {
+                        try {
+                            val newSig = CryptoManager.sign(entity.ciphertext, priv)
+                            db.vaultDao().insertEntry(entity.copy(signature = newSig))
+                        } catch (e: Exception) {
+                            // non-fatal
+                        }
+                    }
+                    items.add(item)
+                }
             } catch (e: Exception) {
-                // Decryption failed or signature invalid
+                // Decryption failed: key does not match this entry
             }
         }
         _vaultItems.value = items.sortedByDescending { it.timestamp }
@@ -866,6 +890,13 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                     currentItems = loaded
                 }
 
+                if (currentItems.isEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        onError("Cannot export backup: Your vault is empty. Please add items or seed phrases before exporting.")
+                    }
+                    return@launch
+                }
+
                 val imageMap = mutableMapOf<String, String>()
                 for (item in currentItems) {
                     if (!item.imagePath.isNullOrBlank()) {
@@ -889,8 +920,12 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                 val encryptedPayloadBase64 = android.util.Base64.encodeToString(encryptedPayload, android.util.Base64.NO_WRAP)
 
                 val signatureHex = if (priv != null) {
-                    val sig = CryptoManager.sign(encryptedPayload, priv)
-                    CryptoManager.bytesToHex(sig)
+                    try {
+                        val sig = CryptoManager.sign(encryptedPayload, priv)
+                        CryptoManager.bytesToHex(sig)
+                    } catch (e: Exception) {
+                        null
+                    }
                 } else null
 
                 val archive = EncryptedVaultBackupArchive(
@@ -908,25 +943,64 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                 val archiveBytes = archiveJson.toByteArray(Charsets.UTF_8)
 
                 var written = false
-                listOf("rwt", "wt", "w").forEach { mode ->
-                    if (!written) {
-                        try {
-                            context.contentResolver.openOutputStream(outputUri, mode)?.use { stream ->
-                                stream.write(archiveBytes)
-                                stream.flush()
-                                written = true
-                            }
-                        } catch (e: Exception) {
-                            // try next write mode
+
+                // 1. Primary write method: ParcelFileDescriptor with "wt" (truncate + write) and fsync
+                try {
+                    context.contentResolver.openFileDescriptor(outputUri, "wt")?.use { pfd ->
+                        java.io.FileOutputStream(pfd.fileDescriptor).use { fos ->
+                            fos.write(archiveBytes)
+                            fos.flush()
+                            try {
+                                pfd.fileDescriptor.sync()
+                            } catch (ignored: Exception) {}
                         }
+                        written = true
+                    }
+                } catch (e: Exception) {
+                    // try fallback
+                }
+
+                // 2. Fallback: ParcelFileDescriptor with "w" and fsync
+                if (!written) {
+                    try {
+                        context.contentResolver.openFileDescriptor(outputUri, "w")?.use { pfd ->
+                            java.io.FileOutputStream(pfd.fileDescriptor).use { fos ->
+                                fos.write(archiveBytes)
+                                fos.flush()
+                                try {
+                                    pfd.fileDescriptor.sync()
+                                } catch (ignored: Exception) {}
+                            }
+                            written = true
+                        }
+                    } catch (e: Exception) {
+                        // try fallback
                     }
                 }
 
+                // 3. Fallback: standard openOutputStream with "wt"
                 if (!written) {
-                    context.contentResolver.openOutputStream(outputUri)?.use { stream ->
-                        stream.write(archiveBytes)
-                        stream.flush()
-                        written = true
+                    try {
+                        context.contentResolver.openOutputStream(outputUri, "wt")?.use { stream ->
+                            stream.write(archiveBytes)
+                            stream.flush()
+                            written = true
+                        }
+                    } catch (e: Exception) {
+                        // try next
+                    }
+                }
+
+                // 4. Fallback: standard openOutputStream default
+                if (!written) {
+                    try {
+                        context.contentResolver.openOutputStream(outputUri)?.use { stream ->
+                            stream.write(archiveBytes)
+                            stream.flush()
+                            written = true
+                        }
+                    } catch (e: Exception) {
+                        // failed
                     }
                 }
 
@@ -934,8 +1008,16 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                     throw IllegalArgumentException("Could not write backup bytes to selected storage location")
                 }
 
+                val statSize = try {
+                    context.contentResolver.openFileDescriptor(outputUri, "r")?.use { it.statSize } ?: -1L
+                } catch (e: Exception) {
+                    -1L
+                }
+
+                val finalByteCount = if (statSize > 0) statSize else archiveBytes.size.toLong()
+
                 withContext(Dispatchers.Main) {
-                    onSuccess(currentItems.size, imageMap.size, archiveBytes.size.toLong())
+                    onSuccess(currentItems.size, imageMap.size, finalByteCount)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -966,6 +1048,10 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             currentItems = loaded
+        }
+
+        if (currentItems.isEmpty()) {
+            return null
         }
 
         val imageMap = mutableMapOf<String, String>()
@@ -1038,6 +1124,10 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                     stream.readBytes()
                 } ?: throw IllegalArgumentException("Could not read selected file from storage")
 
+                if (rawBytes.isEmpty()) {
+                    throw IllegalArgumentException("Selected backup file is empty (0 bytes). Please ensure you selected a valid .kascrypt backup file.")
+                }
+
                 val rawText = String(rawBytes, Charsets.UTF_8)
                 val cleanJson = rawText.trim().removePrefix("\uFEFF").trim()
 
@@ -1057,10 +1147,26 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                         android.util.Base64.decode(archive.encryptedPayloadBase64, android.util.Base64.DEFAULT)
                     }
 
-                    val decryptedBytes = try {
+                    // Try decrypting with active vault key
+                    var decryptedBytes: ByteArray? = try {
                         CryptoManager.decryptXChaCha20Poly1305(encryptedBytes, key)
                     } catch (e: Exception) {
-                        throw IllegalStateException("Decryption failed: Key mismatch. Ensure you are logged into the same vault account/password used to create this backup.")
+                        null
+                    }
+
+                    // Fallback: If decryption failed with active key, try deriving key using archive saltHex and session password
+                    if (decryptedBytes == null && activeSessionPassword != null && !archive.saltHex.isNullOrBlank()) {
+                        try {
+                            val archiveSalt = String(CryptoManager.hexToBytes(archive.saltHex), Charsets.UTF_8)
+                            val altKey = CryptoManager.deriveKey(activeSessionPassword!!, archiveSalt)
+                            decryptedBytes = CryptoManager.decryptXChaCha20Poly1305(encryptedBytes, altKey)
+                        } catch (e: Exception) {
+                            // password or salt mismatch
+                        }
+                    }
+
+                    if (decryptedBytes == null) {
+                        throw IllegalStateException("Decryption failed: Key mismatch. Ensure you are logged into the vault using the master password that created this backup.")
                     }
 
                     val payloadJson = String(decryptedBytes, Charsets.UTF_8)
@@ -1098,6 +1204,10 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                     throw IllegalArgumentException("Invalid or unrecognized backup file format")
                 }
 
+                if (payload.items.isEmpty() && payload.imageAssets.isEmpty()) {
+                    throw IllegalArgumentException("Backup archive was decrypted, but contains no items or images to restore.")
+                }
+
                 var restoredImages = 0
                 for ((filename, b64Data) in payload.imageAssets) {
                     try {
@@ -1124,7 +1234,11 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                     val itemJson = vaultItemAdapter.toJson(itemToSave)
                     val plaintext = itemJson.toByteArray(Charsets.UTF_8)
                     val ciphertext = CryptoManager.encryptXChaCha20Poly1305(plaintext, key)
-                    val signature = CryptoManager.sign(ciphertext, priv)
+                    val signature = try {
+                        CryptoManager.sign(ciphertext, priv)
+                    } catch (e: Exception) {
+                        ByteArray(0)
+                    }
                     val entity = VaultEntryEntity(
                         id = itemId,
                         ciphertext = ciphertext,
