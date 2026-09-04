@@ -595,7 +595,7 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                 try {
                     val privStr = db.vaultDao().getConfig("ml_dsa_priv")
                     val pubStr = db.vaultDao().getConfig("ml_dsa_pub")
-                    val algo = db.vaultDao().getConfig("ml_dsa_algo") ?: "Ed25519"
+                    val algo = db.vaultDao().getConfig("ml_dsa_algo") ?: "ML-DSA-65"
                     if (privStr != null && pubStr != null) {
                         val privBytes = kotlin.io.encoding.Base64.Default.decode(privStr)
                         val pubBytes = kotlin.io.encoding.Base64.Default.decode(pubStr)

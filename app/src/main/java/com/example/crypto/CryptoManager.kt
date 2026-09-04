@@ -182,46 +182,52 @@ object CryptoManager {
         return sig.verify(signature)
     }
 
-    fun getPublicKey(encoded: ByteArray, algorithm: String = "Ed25519"): PublicKey {
+    fun getPublicKey(encoded: ByteArray, algorithm: String = "ML-DSA-65"): PublicKey {
         val spec = X509EncodedKeySpec(encoded)
-        val candidateAlgos = listOf(algorithm, "ML-DSA-65", "ML-DSA", "ML-DSA-87", "ML-DSA-44", "Dilithium3", "Dilithium", "Dilithium2", "Falcon-512", "Ed25519")
+        val targetAlgo = when (algorithm.uppercase()) {
+            "ML-DSA-87", "DILITHIUM5" -> "ML-DSA-87"
+            "ML-DSA-44", "DILITHIUM2" -> "ML-DSA-44"
+            "ED25519" -> "Ed25519"
+            else -> "ML-DSA-65"
+        }
         val candidateProviders = listOf(
-            BouncyCastleProvider.PROVIDER_NAME,
             BouncyCastlePQCProvider.PROVIDER_NAME,
+            BouncyCastleProvider.PROVIDER_NAME,
             null
         )
-        for (algo in candidateAlgos) {
-            for (provider in candidateProviders) {
-                try {
-                    val kf = if (provider != null) KeyFactory.getInstance(algo, provider) else KeyFactory.getInstance(algo)
-                    return kf.generatePublic(spec)
-                } catch (e: Throwable) {
-                    // Try next
-                }
+        for (provider in candidateProviders) {
+            try {
+                val kf = if (provider != null) KeyFactory.getInstance(targetAlgo, provider) else KeyFactory.getInstance(targetAlgo)
+                return kf.generatePublic(spec)
+            } catch (_: Throwable) {
+                // Try next provider
             }
         }
-        throw IllegalArgumentException("Unable to decode public key specification")
+        throw IllegalArgumentException("Strict key decoding failure: Unable to decode public key spec using required algorithm '$targetAlgo'")
     }
 
-    fun getPrivateKey(encoded: ByteArray, algorithm: String = "Ed25519"): PrivateKey {
+    fun getPrivateKey(encoded: ByteArray, algorithm: String = "ML-DSA-65"): PrivateKey {
         val spec = PKCS8EncodedKeySpec(encoded)
-        val candidateAlgos = listOf(algorithm, "ML-DSA-65", "ML-DSA", "ML-DSA-87", "ML-DSA-44", "Dilithium3", "Dilithium", "Dilithium2", "Falcon-512", "Ed25519")
+        val targetAlgo = when (algorithm.uppercase()) {
+            "ML-DSA-87", "DILITHIUM5" -> "ML-DSA-87"
+            "ML-DSA-44", "DILITHIUM2" -> "ML-DSA-44"
+            "ED25519" -> "Ed25519"
+            else -> "ML-DSA-65"
+        }
         val candidateProviders = listOf(
-            BouncyCastleProvider.PROVIDER_NAME,
             BouncyCastlePQCProvider.PROVIDER_NAME,
+            BouncyCastleProvider.PROVIDER_NAME,
             null
         )
-        for (algo in candidateAlgos) {
-            for (provider in candidateProviders) {
-                try {
-                    val kf = if (provider != null) KeyFactory.getInstance(algo, provider) else KeyFactory.getInstance(algo)
-                    return kf.generatePrivate(spec)
-                } catch (e: Throwable) {
-                    // Try next
-                }
+        for (provider in candidateProviders) {
+            try {
+                val kf = if (provider != null) KeyFactory.getInstance(targetAlgo, provider) else KeyFactory.getInstance(targetAlgo)
+                return kf.generatePrivate(spec)
+            } catch (_: Throwable) {
+                // Try next provider
             }
         }
-        throw IllegalArgumentException("Unable to decode private key specification")
+        throw IllegalArgumentException("Strict key decoding failure: Unable to decode private key spec using required algorithm '$targetAlgo'")
     }
 
     // --- Open Source Cryptographic Password Generator & Strength Detector ---
