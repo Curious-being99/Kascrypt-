@@ -570,12 +570,11 @@ object KfsEngine {
         stream.write(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(gas).array())
 
         // 14. Payload Hash (32 bytes)
-        val isNative = subnetworkBytes.all { it == 0.toByte() }
-        val payloadHash = if (isNative) {
-            ByteArray(32)
-        } else {
-            val payloadBytes = if (!payloadHex.isNullOrEmpty()) CryptoManager.hexToBytes(payloadHex) else ByteArray(0)
+        val payloadBytes = if (!payloadHex.isNullOrEmpty()) CryptoManager.hexToBytes(payloadHex) else ByteArray(0)
+        val payloadHash = if (payloadBytes.isNotEmpty()) {
             CryptoManager.hashBlake2bPersonalized(payloadBytes, tag)
+        } else {
+            ByteArray(32)
         }
         stream.write(payloadHash)
 
