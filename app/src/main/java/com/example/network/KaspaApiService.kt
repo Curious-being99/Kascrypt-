@@ -86,7 +86,8 @@ data class KaspaTransaction(
 
 @JsonClass(generateAdapter = true)
 data class KaspaSubmitTransactionRequest(
-    val transaction: KaspaTransaction
+    val transaction: KaspaTransaction,
+    val allowOrphan: Boolean = true
 )
 
 @JsonClass(generateAdapter = true)

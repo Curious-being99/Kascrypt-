@@ -190,12 +190,17 @@ object KfsEngine {
                 _uploadProgress.value = progress
                 _uploadStatus.value = "Broadcasting Chunk ${chunk.index + 1}/${chunks.size} to Live Node..."
 
+                if (chunk.index > 0) {
+                    // Cooperative DAG propagation pause for chained parent transaction
+                    kotlinx.coroutines.delay(1200)
+                }
+
                 var fee = calculateStandardFeeSompis(chunk.payloadHex)
                 logs.add("Broadcasting Chunk #${chunk.index + 1} (${chunk.size} bytes, Fee: $fee sompis / ${String.format(java.util.Locale.US, "%.5f", fee / 100_000_000.0)} KAS)")
 
                 var chunkSuccess = false
                 var retryCount = 0
-                val maxRetries = 2
+                val maxRetries = 4
 
                 while (!chunkSuccess && retryCount <= maxRetries) {
                     try {
@@ -205,15 +210,30 @@ object KfsEngine {
                             utxos = activeUtxos,
                             feeSompis = fee
                         )
-                        val request = KaspaSubmitTransactionRequest(transaction = built.transaction)
+                        val request = KaspaSubmitTransactionRequest(transaction = built.transaction, allowOrphan = true)
                         val response = KaspaNetwork.api.submitTransaction(request)
 
                         if (response.error != null) {
                             val reqFee = extractRequiredFee(response.error)
+                            val isOrphan = response.error.contains("orphan", ignoreCase = true)
                             if (reqFee != null && retryCount < maxRetries) {
                                 retryCount++
                                 fee = reqFee + 15_000L
                                 logs.add("Fee adjustment: Node requires $reqFee sompis. Retrying Chunk #${chunk.index + 1} with $fee sompis...")
+                                continue
+                            } else if (isOrphan && retryCount < maxRetries) {
+                                retryCount++
+                                logs.add("DAG synchronization: Parent transaction is propagating. Waiting 1.8s (attempt $retryCount/$maxRetries)...")
+                                if (wallet != null) {
+                                    try {
+                                        val liveUtxos = KaspaNetwork.api.getAddressUtxos(wallet.address)
+                                        if (liveUtxos.isNotEmpty()) {
+                                            activeUtxos.clear()
+                                            activeUtxos.addAll(liveUtxos)
+                                        }
+                                    } catch (_: Exception) {}
+                                }
+                                kotlinx.coroutines.delay(1800)
                                 continue
                             } else {
                                 hasNodeRejection = true
@@ -256,10 +276,25 @@ object KfsEngine {
                     } catch (e: retrofit2.HttpException) {
                         val err = e.response()?.errorBody()?.string() ?: e.message()
                         val reqFee = extractRequiredFee(err)
+                        val isOrphan = err.contains("orphan", ignoreCase = true)
                         if (reqFee != null && retryCount < maxRetries) {
                             retryCount++
                             fee = reqFee + 15_000L
                             logs.add("Fee adjustment: Node requires $reqFee sompis. Retrying Chunk #${chunk.index + 1} with $fee sompis...")
+                            continue
+                        } else if (isOrphan && retryCount < maxRetries) {
+                            retryCount++
+                            logs.add("DAG synchronization: Parent transaction is propagating. Waiting 1.8s (attempt $retryCount/$maxRetries)...")
+                            if (wallet != null) {
+                                try {
+                                    val liveUtxos = KaspaNetwork.api.getAddressUtxos(wallet.address)
+                                    if (liveUtxos.isNotEmpty()) {
+                                        activeUtxos.clear()
+                                        activeUtxos.addAll(liveUtxos)
+                                    }
+                                } catch (_: Exception) {}
+                            }
+                            kotlinx.coroutines.delay(1800)
                             continue
                         } else {
                             hasNodeRejection = true
@@ -289,12 +324,15 @@ object KfsEngine {
             logs.add("Computed KFS Merkle Root: ${manifest.merkleRoot}")
 
             if (!hasNodeRejection && successfulBroadcasts == chunks.size) {
+                // Allow the parent chunk transaction to propagate across the BlockDAG network
+                kotlinx.coroutines.delay(1200)
+
                 var manifestFee = calculateStandardFeeSompis(manifestHex)
                 logs.add("Broadcasting Master Manifest (Fee: $manifestFee sompis / ${String.format(java.util.Locale.US, "%.5f", manifestFee / 100_000_000.0)} KAS)")
 
                 var manifestSuccess = false
                 var manifestRetry = 0
-                val maxManifestRetries = 2
+                val maxManifestRetries = 4
 
                 while (!manifestSuccess && manifestRetry <= maxManifestRetries) {
                     try {
@@ -304,15 +342,30 @@ object KfsEngine {
                             utxos = activeUtxos,
                             feeSompis = manifestFee
                         )
-                        val masterRequest = KaspaSubmitTransactionRequest(transaction = masterBuilt.transaction)
+                        val masterRequest = KaspaSubmitTransactionRequest(transaction = masterBuilt.transaction, allowOrphan = true)
                         val masterResponse = KaspaNetwork.api.submitTransaction(masterRequest)
 
                         if (masterResponse.error != null) {
                             val reqFee = extractRequiredFee(masterResponse.error)
+                            val isOrphan = masterResponse.error.contains("orphan", ignoreCase = true)
                             if (reqFee != null && manifestRetry < maxManifestRetries) {
                                 manifestRetry++
                                 manifestFee = reqFee + 15_000L
                                 logs.add("Fee adjustment: Node requires $reqFee sompis for manifest. Retrying with $manifestFee sompis...")
+                                continue
+                            } else if (isOrphan && manifestRetry < maxManifestRetries) {
+                                manifestRetry++
+                                logs.add("DAG synchronization: Parent chunk is propagating across Kaspa nodes. Waiting 2.0s (attempt $manifestRetry/$maxManifestRetries)...")
+                                if (wallet != null) {
+                                    try {
+                                        val liveUtxos = KaspaNetwork.api.getAddressUtxos(wallet.address)
+                                        if (liveUtxos.isNotEmpty()) {
+                                            activeUtxos.clear()
+                                            activeUtxos.addAll(liveUtxos)
+                                        }
+                                    } catch (_: Exception) {}
+                                }
+                                kotlinx.coroutines.delay(2000)
                                 continue
                             } else {
                                 hasNodeRejection = true
@@ -331,10 +384,25 @@ object KfsEngine {
                     } catch (e: retrofit2.HttpException) {
                         val err = e.response()?.errorBody()?.string() ?: e.message()
                         val reqFee = extractRequiredFee(err)
+                        val isOrphan = err.contains("orphan", ignoreCase = true)
                         if (reqFee != null && manifestRetry < maxManifestRetries) {
                             manifestRetry++
                             manifestFee = reqFee + 15_000L
                             logs.add("Fee adjustment: Node requires $reqFee sompis for manifest. Retrying with $manifestFee sompis...")
+                            continue
+                        } else if (isOrphan && manifestRetry < maxManifestRetries) {
+                            manifestRetry++
+                            logs.add("DAG synchronization: Parent chunk is propagating across Kaspa nodes. Waiting 2.0s (attempt $manifestRetry/$maxManifestRetries)...")
+                            if (wallet != null) {
+                                try {
+                                    val liveUtxos = KaspaNetwork.api.getAddressUtxos(wallet.address)
+                                    if (liveUtxos.isNotEmpty()) {
+                                        activeUtxos.clear()
+                                        activeUtxos.addAll(liveUtxos)
+                                    }
+                                } catch (_: Exception) {}
+                            }
+                            kotlinx.coroutines.delay(2000)
                             continue
                         } else {
                             hasNodeRejection = true
