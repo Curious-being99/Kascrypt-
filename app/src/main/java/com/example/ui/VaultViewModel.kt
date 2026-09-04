@@ -1261,6 +1261,96 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    private fun parseVaultPayloadFlexible(jsonString: String): VaultBackupPayload? {
+        val clean = jsonString.trim().removePrefix("\uFEFF").trim()
+        if (clean.isEmpty()) return null
+
+        // 1. Try Moshi adapter
+        try {
+            val payload = backupPayloadAdapter.fromJson(clean)
+            if (payload != null && (payload.items.isNotEmpty() || payload.imageAssets.isNotEmpty())) {
+                return payload
+            }
+        } catch (_: Exception) {}
+
+        // 2. Try Moshi List<VaultItem> adapter
+        try {
+            val listType = com.squareup.moshi.Types.newParameterizedType(List::class.java, VaultItem::class.java)
+            val listAdapter = moshi.adapter<List<VaultItem>>(listType)
+            val itemsList = listAdapter.fromJson(clean)
+            if (!itemsList.isNullOrEmpty()) {
+                return VaultBackupPayload(items = itemsList, imageAssets = emptyMap())
+            }
+        } catch (_: Exception) {}
+
+        // 3. Try org.json.JSONObject / org.json.JSONArray
+        try {
+            if (clean.startsWith("[")) {
+                val jsonArray = org.json.JSONArray(clean)
+                val items = mutableListOf<VaultItem>()
+                for (i in 0 until jsonArray.length()) {
+                    val obj = jsonArray.optJSONObject(i) ?: continue
+                    val id = obj.optString("id").ifBlank { obj.optString("uuid", java.util.UUID.randomUUID().toString()) }
+                    val title = obj.optString("title").ifBlank { obj.optString("account", obj.optString("name", obj.optString("label", "Restored Entry"))) }
+                    val content = obj.optString("content").ifBlank { obj.optString("secret", obj.optString("password", obj.optString("notes", obj.optString("value", "")))) }
+                    val timestamp = if (obj.has("timestamp")) obj.optLong("timestamp") else if (obj.has("created")) obj.optLong("created") else System.currentTimeMillis()
+                    val imgPath = obj.optString("imagePath").ifBlank { obj.optString("image", "").ifBlank { null } }
+                    items.add(VaultItem(id = id, title = title, content = content, timestamp = timestamp, imagePath = imgPath))
+                }
+                if (items.isNotEmpty()) {
+                    return VaultBackupPayload(items = items, imageAssets = emptyMap())
+                }
+            } else if (clean.startsWith("{")) {
+                val jsonObj = org.json.JSONObject(clean)
+                val items = mutableListOf<VaultItem>()
+                val imageMap = mutableMapOf<String, String>()
+
+                // Extract imageAssets map
+                val imgObj = jsonObj.optJSONObject("imageAssets") ?: jsonObj.optJSONObject("images") ?: jsonObj.optJSONObject("assets")
+                if (imgObj != null) {
+                    val keys = imgObj.keys()
+                    while (keys.hasNext()) {
+                        val k = keys.next()
+                        val v = imgObj.optString(k)
+                        if (v.isNotBlank()) {
+                            imageMap[k] = v
+                        }
+                    }
+                }
+
+                // Extract items array
+                val itemsArray = jsonObj.optJSONArray("items") ?: jsonObj.optJSONArray("entries") ?: jsonObj.optJSONArray("vault") ?: jsonObj.optJSONArray("records") ?: jsonObj.optJSONArray("data")
+                if (itemsArray != null) {
+                    for (i in 0 until itemsArray.length()) {
+                        val obj = itemsArray.optJSONObject(i) ?: continue
+                        val id = obj.optString("id").ifBlank { obj.optString("uuid", java.util.UUID.randomUUID().toString()) }
+                        val title = obj.optString("title").ifBlank { obj.optString("account", obj.optString("name", obj.optString("label", "Restored Entry"))) }
+                        val content = obj.optString("content").ifBlank { obj.optString("secret", obj.optString("password", obj.optString("notes", obj.optString("value", "")))) }
+                        val timestamp = if (obj.has("timestamp")) obj.optLong("timestamp") else if (obj.has("created")) obj.optLong("created") else System.currentTimeMillis()
+                        val imgPath = obj.optString("imagePath").ifBlank { obj.optString("image", "").ifBlank { null } }
+                        items.add(VaultItem(id = id, title = title, content = content, timestamp = timestamp, imagePath = imgPath))
+                    }
+                } else {
+                    // Check if object itself represents a single item
+                    val title = jsonObj.optString("title").ifBlank { jsonObj.optString("account", jsonObj.optString("name", "")) }
+                    val content = jsonObj.optString("content").ifBlank { jsonObj.optString("secret", jsonObj.optString("password", jsonObj.optString("notes", ""))) }
+                    if (title.isNotBlank() || content.isNotBlank()) {
+                        val id = jsonObj.optString("id").ifBlank { java.util.UUID.randomUUID().toString() }
+                        val timestamp = if (jsonObj.has("timestamp")) jsonObj.optLong("timestamp") else System.currentTimeMillis()
+                        val imgPath = jsonObj.optString("imagePath").ifBlank { null }
+                        items.add(VaultItem(id = id, title = title, content = content, timestamp = timestamp, imagePath = imgPath))
+                    }
+                }
+
+                if (items.isNotEmpty() || imageMap.isNotEmpty()) {
+                    return VaultBackupPayload(items = items, imageAssets = imageMap)
+                }
+            }
+        } catch (_: Exception) {}
+
+        return null
+    }
+
     fun importEncryptedBackup(
         context: Context,
         inputUri: android.net.Uri,
@@ -1286,41 +1376,56 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                     throw IllegalArgumentException("Selected backup file is empty (0 bytes). Please ensure you selected a valid .json or .kascrypt backup file.")
                 }
 
-                val rawText = String(rawBytes, Charsets.UTF_8)
-                val cleanJson = rawText.trim().removePrefix("\uFEFF").trim()
+                val rawText = String(rawBytes, Charsets.UTF_8).trim().removePrefix("\uFEFF").trim()
 
                 var payload: VaultBackupPayload? = null
 
-                // 1. Try parsing as EncryptedVaultBackupArchive (.json or .kascrypt)
-                val archive = try {
-                    backupArchiveAdapter.fromJson(cleanJson)
-                } catch (e: Exception) {
-                    null
+                // 1. Try extracting encrypted payload Base64 string from JSON object if encrypted
+                var encPayloadBase64: String? = null
+                var saltHex: String? = null
+
+                // Try Moshi
+                val archive = try { backupArchiveAdapter.fromJson(rawText) } catch (_: Exception) { null }
+                if (archive != null && !archive.encryptedPayloadBase64.isNullOrBlank()) {
+                    encPayloadBase64 = archive.encryptedPayloadBase64
+                    saltHex = archive.saltHex
+                } else if (rawText.startsWith("{")) {
+                    try {
+                        val jsonObj = org.json.JSONObject(rawText)
+                        if (jsonObj.has("encryptedPayloadBase64")) {
+                            encPayloadBase64 = jsonObj.optString("encryptedPayloadBase64")
+                        } else if (jsonObj.has("encryptedPayload")) {
+                            encPayloadBase64 = jsonObj.optString("encryptedPayload")
+                        } else if (jsonObj.has("payload")) {
+                            encPayloadBase64 = jsonObj.optString("payload")
+                        }
+                        if (jsonObj.has("saltHex")) {
+                            saltHex = jsonObj.optString("saltHex")
+                        } else if (jsonObj.has("salt")) {
+                            saltHex = jsonObj.optString("salt")
+                        }
+                    } catch (_: Exception) {}
                 }
 
-                if (archive != null && !archive.encryptedPayloadBase64.isNullOrBlank()) {
+                if (!encPayloadBase64.isNullOrBlank()) {
                     val encryptedBytes = try {
-                        android.util.Base64.decode(archive.encryptedPayloadBase64, android.util.Base64.NO_WRAP)
-                    } catch (e: Exception) {
-                        android.util.Base64.decode(archive.encryptedPayloadBase64, android.util.Base64.DEFAULT)
+                        android.util.Base64.decode(encPayloadBase64, android.util.Base64.NO_WRAP)
+                    } catch (_: Exception) {
+                        android.util.Base64.decode(encPayloadBase64, android.util.Base64.DEFAULT)
                     }
 
-                    // Try decrypting with active vault key
+                    // Decrypt using active vault key
                     var decryptedBytes: ByteArray? = try {
                         CryptoManager.decryptXChaCha20Poly1305(encryptedBytes, key)
-                    } catch (e: Exception) {
-                        null
-                    }
+                    } catch (_: Exception) { null }
 
-                    // Fallback: If decryption failed with active key, try deriving key using archive saltHex and session password
-                    if (decryptedBytes == null && activeSessionPassword != null && !archive.saltHex.isNullOrBlank()) {
+                    // Fallback: Try session password + salt
+                    if (decryptedBytes == null && activeSessionPassword != null && !saltHex.isNullOrBlank()) {
                         try {
-                            val archiveSalt = String(CryptoManager.hexToBytes(archive.saltHex), Charsets.UTF_8)
+                            val archiveSalt = try { String(CryptoManager.hexToBytes(saltHex), Charsets.UTF_8) } catch (_: Exception) { saltHex }
                             val altKey = CryptoManager.deriveKey(activeSessionPassword!!, archiveSalt)
                             decryptedBytes = CryptoManager.decryptXChaCha20Poly1305(encryptedBytes, altKey)
-                        } catch (e: Exception) {
-                            // password or salt mismatch
-                        }
+                        } catch (_: Exception) {}
                     }
 
                     if (decryptedBytes == null) {
@@ -1328,42 +1433,31 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     val payloadJson = String(decryptedBytes, Charsets.UTF_8)
-                    payload = try {
-                        backupPayloadAdapter.fromJson(payloadJson)
-                    } catch (e: Exception) {
-                        null
-                    }
+                    payload = parseVaultPayloadFlexible(payloadJson)
                 }
 
-                // 2. Fallback: Try parsing directly as VaultBackupPayload (unencrypted JSON)
+                // 2. Fallback: Parse unencrypted raw text as JSON payload
                 if (payload == null) {
-                    payload = try {
-                        backupPayloadAdapter.fromJson(cleanJson)
-                    } catch (e: Exception) {
-                        null
-                    }
+                    payload = parseVaultPayloadFlexible(rawText)
                 }
 
-                // 3. Fallback: Try parsing as List<VaultItem> (raw list of items)
-                if (payload == null) {
+                // 3. Fallback: Check if rawText is raw Base64 string directly
+                if (payload == null && !rawText.startsWith("{") && !rawText.startsWith("[")) {
                     try {
-                        val listType = com.squareup.moshi.Types.newParameterizedType(List::class.java, VaultItem::class.java)
-                        val listAdapter = moshi.adapter<List<VaultItem>>(listType)
-                        val itemsList = listAdapter.fromJson(cleanJson)
-                        if (!itemsList.isNullOrEmpty()) {
-                            payload = VaultBackupPayload(items = itemsList, imageAssets = emptyMap())
+                        val decodedBytes = android.util.Base64.decode(rawText, android.util.Base64.DEFAULT)
+                        val decrypted = try { CryptoManager.decryptXChaCha20Poly1305(decodedBytes, key) } catch (_: Exception) { null }
+                        if (decrypted != null) {
+                            payload = parseVaultPayloadFlexible(String(decrypted, Charsets.UTF_8))
                         }
-                    } catch (e: Exception) {
-                        // ignore
-                    }
+                    } catch (_: Exception) {}
                 }
 
                 if (payload == null) {
-                    throw IllegalArgumentException("Invalid or unrecognized backup file format")
+                    throw IllegalArgumentException("Invalid or unrecognized backup JSON format")
                 }
 
                 if (payload.items.isEmpty() && payload.imageAssets.isEmpty()) {
-                    throw IllegalArgumentException("Backup archive was decrypted, but contains no items or images to restore.")
+                    throw IllegalArgumentException("Backup JSON was parsed, but contains no items or images to restore.")
                 }
 
                 var restoredImages = 0
@@ -1377,7 +1471,26 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                             } catch (e: Exception) {
                                 android.util.Base64.decode(b64Data, android.util.Base64.DEFAULT)
                             }
-                            imgFile.writeBytes(data)
+
+                            // Check if image is raw unencrypted photo vs encrypted
+                            val isRawImage = data.size > 4 && (
+                                (data[0] == 0xFF.toByte() && data[1] == 0xD8.toByte()) ||
+                                (data[0] == 0x89.toByte() && data[1] == 'P'.toByte() && data[2] == 'N'.toByte()) ||
+                                (data[0] == 'G'.toByte() && data[1] == 'I'.toByte() && data[2] == 'F'.toByte())
+                            )
+
+                            val finalImageBytes = if (isRawImage) {
+                                CryptoManager.encryptXChaCha20Poly1305(data, key)
+                            } else {
+                                try {
+                                    CryptoManager.decryptXChaCha20Poly1305(data, key)
+                                    data // Already correctly encrypted
+                                } catch (_: Exception) {
+                                    CryptoManager.encryptXChaCha20Poly1305(data, key)
+                                }
+                            }
+
+                            imgFile.writeBytes(finalImageBytes)
                             restoredImages++
                         }
                     } catch (e: Exception) {
