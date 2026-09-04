@@ -110,6 +110,48 @@ object KfsEngine {
     }
 
     /**
+     * Estimates the transaction compute mass based on Kaspa KIP-9 rules:
+     * Compute mass = serialized transaction byte size + (total sigOps * 1000).
+     */
+    fun estimateComputeMass(payloadHex: String, inputCount: Int = 1, outputCount: Int = 1): Long {
+        val payloadBytes = if (payloadHex.isNotEmpty()) payloadHex.length / 2 else 0
+        // Wire serialization overhead:
+        // Base headers (version 2, lockTime 8, subnetworkId 20, gas 8, payloadLen 4): 42 bytes
+        // Inputs (outpoint 36, sigScript ~67, sequence 8, sigOpCount 1): ~112 bytes each
+        // Outputs (amount 8, scriptPubKey ~38): ~46 bytes each
+        // Transport/RPC protocol overhead padding: ~150 bytes
+        val txSizeBytes = 42 + (inputCount * 115) + (outputCount * 48) + payloadBytes + 150
+        val sigOpsMass = inputCount * 1000L
+        return txSizeBytes + sigOpsMass
+    }
+
+    /**
+     * Calculates the minimum standard fee in sompis required by Kaspa consensus.
+     * Kaspa standard relay fee rate is 100 sompis per unit of compute mass.
+     * We add a 25% safety buffer and enforce a 200,000 sompis (0.002 KAS) floor.
+     */
+    fun calculateStandardFeeSompis(payloadHex: String, inputCount: Int = 1, outputCount: Int = 1): Long {
+        val mass = estimateComputeMass(payloadHex, inputCount, outputCount)
+        val feeFromMass = (mass * 100L * 125L) / 100L
+        return maxOf(feeFromMass, 200_000L)
+    }
+
+    private fun extractRequiredFee(errorMessage: String?): Long? {
+        if (errorMessage.isNullOrBlank()) return null
+        val regex = Regex("""under the required amount of\s+(\d+)""", RegexOption.IGNORE_CASE)
+        val match = regex.find(errorMessage) ?: return null
+        return match.groupValues[1].toLongOrNull()
+    }
+
+    data class BuiltKaspaTx(
+        val transaction: KaspaTransaction,
+        val selectedUtxo: KaspaUtxoEntry?,
+        val changeAmount: Long,
+        val feeSompis: Long,
+        val inputAmount: Long
+    )
+
+    /**
      * Broadcasts prepared KFS chunks directly to Kaspa nodes via Retrofit REST endpoint.
      */
     suspend fun uploadToKaspa(
@@ -124,10 +166,12 @@ object KfsEngine {
             _uploadStatus.value = "Preparing KFS Chunking Engine..."
             logs.add("Payload size: ${data.size} bytes")
 
-            if (utxos.isNotEmpty() && wallet != null) {
-                val totalSompis = utxos.sumOf { it.utxoEntry?.amount ?: 0L }
+            val activeUtxos = utxos.toMutableList()
+
+            if (activeUtxos.isNotEmpty() && wallet != null) {
+                val totalSompis = activeUtxos.sumOf { it.utxoEntry?.amount ?: 0L }
                 val kasAmount = totalSompis.toDouble() / 100_000_000.0
-                logs.add("Funded wallet active: ${String.format(java.util.Locale.US, "%.4f", kasAmount)} KAS (${utxos.size} UTXOs)")
+                logs.add("Funded wallet active: ${String.format(java.util.Locale.US, "%.4f", kasAmount)} KAS (${activeUtxos.size} UTXOs)")
             } else {
                 logs.add("Notice: Wallet has 0 confirmed UTXOs on live BlockDAG node.")
             }
@@ -145,38 +189,94 @@ object KfsEngine {
                 val progress = 0.1f + (0.8f * (chunk.index + 1) / chunks.size)
                 _uploadProgress.value = progress
                 _uploadStatus.value = "Broadcasting Chunk ${chunk.index + 1}/${chunks.size} to Live Node..."
-                logs.add("Broadcasting Chunk #${chunk.index + 1} (${chunk.size} bytes)")
 
-                try {
-                    val tx = buildKaspaTransaction(
-                        payloadHex = chunk.payloadHex,
-                        wallet = wallet,
-                        utxos = utxos
-                    )
-                    val request = KaspaSubmitTransactionRequest(transaction = tx)
-                    val response = KaspaNetwork.api.submitTransaction(request)
-                    if (response.error != null) {
+                var fee = calculateStandardFeeSompis(chunk.payloadHex)
+                logs.add("Broadcasting Chunk #${chunk.index + 1} (${chunk.size} bytes, Fee: $fee sompis / ${String.format(java.util.Locale.US, "%.5f", fee / 100_000_000.0)} KAS)")
+
+                var chunkSuccess = false
+                var retryCount = 0
+                val maxRetries = 2
+
+                while (!chunkSuccess && retryCount <= maxRetries) {
+                    try {
+                        val built = buildKaspaTransaction(
+                            payloadHex = chunk.payloadHex,
+                            wallet = wallet,
+                            utxos = activeUtxos,
+                            feeSompis = fee
+                        )
+                        val request = KaspaSubmitTransactionRequest(transaction = built.transaction)
+                        val response = KaspaNetwork.api.submitTransaction(request)
+
+                        if (response.error != null) {
+                            val reqFee = extractRequiredFee(response.error)
+                            if (reqFee != null && retryCount < maxRetries) {
+                                retryCount++
+                                fee = reqFee + 15_000L
+                                logs.add("Fee adjustment: Node requires $reqFee sompis. Retrying Chunk #${chunk.index + 1} with $fee sompis...")
+                                continue
+                            } else {
+                                hasNodeRejection = true
+                                lastErrorMessage = response.error
+                                logs.add("Node error: ${response.error}")
+                                break
+                            }
+                        } else if (response.transactionId != null) {
+                            val txId = response.transactionId
+                            logs.add("Chunk #${chunk.index + 1} TxId: $txId")
+                            successfulBroadcasts++
+                            chunkSuccess = true
+
+                            // UTXO chaining: update activeUtxos with the change output
+                            if (built.selectedUtxo != null) {
+                                activeUtxos.remove(built.selectedUtxo)
+                            }
+                            if (built.changeAmount > 0 && wallet != null) {
+                                val changeUtxo = KaspaUtxoEntry(
+                                    address = wallet.address,
+                                    outpoint = KaspaOutpoint(transactionId = txId, index = 0L),
+                                    utxoEntry = KaspaUtxoDetail(
+                                        amount = built.changeAmount,
+                                        scriptPublicKey = KaspaScriptPublicKey(
+                                            scriptPublicKey = "20${wallet.publicKeyHex}ac",
+                                            version = 0
+                                        ),
+                                        blockDaaScore = 0L,
+                                        isCoinbase = false
+                                    )
+                                )
+                                activeUtxos.add(0, changeUtxo)
+                            }
+                            break
+                        } else {
+                            logs.add("Chunk #${chunk.index + 1} sent to node")
+                            chunkSuccess = true
+                            break
+                        }
+                    } catch (e: retrofit2.HttpException) {
+                        val err = e.response()?.errorBody()?.string() ?: e.message()
+                        val reqFee = extractRequiredFee(err)
+                        if (reqFee != null && retryCount < maxRetries) {
+                            retryCount++
+                            fee = reqFee + 15_000L
+                            logs.add("Fee adjustment: Node requires $reqFee sompis. Retrying Chunk #${chunk.index + 1} with $fee sompis...")
+                            continue
+                        } else {
+                            hasNodeRejection = true
+                            lastErrorMessage = "HTTP ${e.code()}: $err"
+                            logs.add("Node response (${e.code()}): $err")
+                            break
+                        }
+                    } catch (e: Exception) {
                         hasNodeRejection = true
-                        lastErrorMessage = response.error
-                        logs.add("Node error: ${response.error}")
+                        val msg = e.message ?: "Network error"
+                        lastErrorMessage = msg
+                        logs.add("Network transmission error: $msg")
                         break
-                    } else if (response.transactionId != null) {
-                        logs.add("Chunk #${chunk.index + 1} TxId: ${response.transactionId}")
-                        successfulBroadcasts++
-                    } else {
-                        logs.add("Chunk #${chunk.index + 1} sent to node")
                     }
-                } catch (e: retrofit2.HttpException) {
-                    hasNodeRejection = true
-                    val err = e.response()?.errorBody()?.string() ?: e.message()
-                    lastErrorMessage = "HTTP ${e.code()}: $err"
-                    logs.add("Node response (${e.code()}): $err")
-                    break
-                } catch (e: Exception) {
-                    hasNodeRejection = true
-                    val msg = e.message ?: "Network error"
-                    lastErrorMessage = msg
-                    logs.add("Network transmission error: $msg")
+                }
+
+                if (!chunkSuccess) {
                     break
                 }
             }
@@ -189,31 +289,66 @@ object KfsEngine {
             logs.add("Computed KFS Merkle Root: ${manifest.merkleRoot}")
 
             if (!hasNodeRejection && successfulBroadcasts == chunks.size) {
-                try {
-                    val masterTx = buildKaspaTransaction(
-                        payloadHex = manifestHex,
-                        wallet = wallet,
-                        utxos = utxos
-                    )
-                    val masterRequest = KaspaSubmitTransactionRequest(transaction = masterTx)
-                    val masterResponse = KaspaNetwork.api.submitTransaction(masterRequest)
-                    if (masterResponse.error != null) {
+                var manifestFee = calculateStandardFeeSompis(manifestHex)
+                logs.add("Broadcasting Master Manifest (Fee: $manifestFee sompis / ${String.format(java.util.Locale.US, "%.5f", manifestFee / 100_000_000.0)} KAS)")
+
+                var manifestSuccess = false
+                var manifestRetry = 0
+                val maxManifestRetries = 2
+
+                while (!manifestSuccess && manifestRetry <= maxManifestRetries) {
+                    try {
+                        val masterBuilt = buildKaspaTransaction(
+                            payloadHex = manifestHex,
+                            wallet = wallet,
+                            utxos = activeUtxos,
+                            feeSompis = manifestFee
+                        )
+                        val masterRequest = KaspaSubmitTransactionRequest(transaction = masterBuilt.transaction)
+                        val masterResponse = KaspaNetwork.api.submitTransaction(masterRequest)
+
+                        if (masterResponse.error != null) {
+                            val reqFee = extractRequiredFee(masterResponse.error)
+                            if (reqFee != null && manifestRetry < maxManifestRetries) {
+                                manifestRetry++
+                                manifestFee = reqFee + 15_000L
+                                logs.add("Fee adjustment: Node requires $reqFee sompis for manifest. Retrying with $manifestFee sompis...")
+                                continue
+                            } else {
+                                hasNodeRejection = true
+                                lastErrorMessage = masterResponse.error
+                                logs.add("Master manifest node error: ${masterResponse.error}")
+                                break
+                            }
+                        } else if (masterResponse.transactionId != null) {
+                            logs.add("Master manifest TxId: ${masterResponse.transactionId}")
+                            manifestSuccess = true
+                            break
+                        } else {
+                            manifestSuccess = true
+                            break
+                        }
+                    } catch (e: retrofit2.HttpException) {
+                        val err = e.response()?.errorBody()?.string() ?: e.message()
+                        val reqFee = extractRequiredFee(err)
+                        if (reqFee != null && manifestRetry < maxManifestRetries) {
+                            manifestRetry++
+                            manifestFee = reqFee + 15_000L
+                            logs.add("Fee adjustment: Node requires $reqFee sompis for manifest. Retrying with $manifestFee sompis...")
+                            continue
+                        } else {
+                            hasNodeRejection = true
+                            lastErrorMessage = "HTTP ${e.code()}: $err"
+                            logs.add("Master manifest sync notice: HTTP ${e.code()} - $err")
+                            break
+                        }
+                    } catch (e: Exception) {
                         hasNodeRejection = true
-                        lastErrorMessage = masterResponse.error
-                        logs.add("Master manifest node error: ${masterResponse.error}")
-                    } else if (masterResponse.transactionId != null) {
-                        logs.add("Master manifest TxId: ${masterResponse.transactionId}")
+                        val msg = e.message ?: "Connection error"
+                        lastErrorMessage = msg
+                        logs.add("Master manifest sync notice: $msg")
+                        break
                     }
-                } catch (e: retrofit2.HttpException) {
-                    hasNodeRejection = true
-                    val err = e.response()?.errorBody()?.string() ?: e.message()
-                    lastErrorMessage = "HTTP ${e.code()}: $err"
-                    logs.add("Master manifest sync notice: HTTP ${e.code()} - $err")
-                } catch (e: Exception) {
-                    hasNodeRejection = true
-                    val msg = e.message ?: "Connection error"
-                    lastErrorMessage = msg
-                    logs.add("Master manifest sync notice: $msg")
                 }
             }
 
@@ -223,7 +358,7 @@ object KfsEngine {
             if (isOverallSuccess) {
                 _uploadStatus.value = "KFS Process Finished. Merkle Root: ${manifest.merkleRoot.take(12)}..."
             } else {
-                _uploadStatus.value = "KFS Node Broadcast Rejected (HTTP/RPC Error). Merkle Root: ${manifest.merkleRoot.take(12)}..."
+                _uploadStatus.value = "KFS Node Broadcast Notice: Merkle Root: ${manifest.merkleRoot.take(12)}..."
             }
 
             val result = KfsBroadcastResult(
@@ -362,19 +497,32 @@ object KfsEngine {
         payloadHex: String,
         wallet: com.example.crypto.KaspaWalletManager.KaspaWallet?,
         utxos: List<KaspaUtxoEntry>,
-        feeSompis: Long = 10000L
-    ): KaspaTransaction {
+        feeSompis: Long? = null
+    ): BuiltKaspaTx {
+        val calculatedFee = feeSompis ?: calculateStandardFeeSompis(payloadHex)
         if (utxos.isEmpty() || wallet == null) {
-            return KaspaTransaction(payload = payloadHex)
+            return BuiltKaspaTx(
+                transaction = KaspaTransaction(payload = payloadHex),
+                selectedUtxo = null,
+                changeAmount = 0L,
+                feeSompis = calculatedFee,
+                inputAmount = 0L
+            )
         }
 
-        val selectedUtxo = utxos.firstOrNull { (it.utxoEntry?.amount ?: 0L) > feeSompis } ?: utxos.firstOrNull()
+        val selectedUtxo = utxos.firstOrNull { (it.utxoEntry?.amount ?: 0L) > calculatedFee } ?: utxos.firstOrNull()
         if (selectedUtxo == null || selectedUtxo.outpoint?.transactionId == null) {
-            return KaspaTransaction(payload = payloadHex)
+            return BuiltKaspaTx(
+                transaction = KaspaTransaction(payload = payloadHex),
+                selectedUtxo = null,
+                changeAmount = 0L,
+                feeSompis = calculatedFee,
+                inputAmount = 0L
+            )
         }
 
         val inputAmount = selectedUtxo.utxoEntry?.amount ?: 0L
-        val changeAmount = (inputAmount - feeSompis).coerceAtLeast(0L)
+        val changeAmount = (inputAmount - calculatedFee).coerceAtLeast(0L)
         val utxoScriptPubKey = selectedUtxo.utxoEntry?.scriptPublicKey
         val scriptPubKeyStr = if (!utxoScriptPubKey?.scriptPublicKey.isNullOrBlank()) {
             utxoScriptPubKey!!.scriptPublicKey
@@ -428,14 +576,25 @@ object KfsEngine {
 
         val signedInput = initialInput.copy(signatureScript = signatureScript)
 
-        return KaspaTransaction(
+        val estimatedMass = estimateComputeMass(payloadHex, 1, outputs.size)
+
+        val tx = KaspaTransaction(
             version = 0,
             inputs = listOf(signedInput),
             outputs = outputs,
             lockTime = 0L,
             subnetworkId = "0000000000000000000000000000000000000000",
             gas = 0L,
-            payload = payloadHex
+            payload = payloadHex,
+            mass = estimatedMass
+        )
+
+        return BuiltKaspaTx(
+            transaction = tx,
+            selectedUtxo = selectedUtxo,
+            changeAmount = changeAmount,
+            feeSompis = calculatedFee,
+            inputAmount = inputAmount
         )
     }
 

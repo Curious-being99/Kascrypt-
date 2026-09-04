@@ -2271,7 +2271,7 @@ fun SettingsScreen(
     var backupErrorMessage by remember { mutableStateOf<String?>(null) }
 
     val createBackupLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/octet-stream")
+        contract = ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
         if (uri != null) {
             viewModel.exportEncryptedBackup(
@@ -2988,7 +2988,7 @@ fun SettingsScreen(
                                 }
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Text(
-                                    "Generates an XChaCha20-Poly1305 encrypted file (.kascrypt) containing all vault items and image assets. Key is derived from your vault credentials.",
+                                    "Generates an XChaCha20-Poly1305 encrypted JSON backup file (.json) containing all vault items and image assets. Key is derived from your vault credentials.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -3023,7 +3023,7 @@ fun SettingsScreen(
                                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
                                     Button(
-                                        onClick = { createBackupLauncher.launch("kascrypt_vault_backup_${System.currentTimeMillis()}.kascrypt") },
+                                        onClick = { createBackupLauncher.launch("kascrypt_vault_backup_${System.currentTimeMillis()}.json") },
                                         enabled = rawVaultItems.isNotEmpty(),
                                         shape = RoundedCornerShape(12.dp),
                                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black),
@@ -3039,7 +3039,7 @@ fun SettingsScreen(
                                             val shareUri = viewModel.createShareableBackupFile(context)
                                             if (shareUri != null) {
                                                 val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                                    type = "application/octet-stream"
+                                                    type = "application/json"
                                                     putExtra(Intent.EXTRA_STREAM, shareUri)
                                                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                                 }
@@ -3076,13 +3076,13 @@ fun SettingsScreen(
                                 }
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Text(
-                                    "Select an existing .kascrypt backup archive file from device storage or Google Drive to restore vault items and encrypted image assets.",
+                                    "Select an existing .json or .kascrypt backup archive file from device storage or Google Drive to restore vault items and encrypted image assets.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                                 Spacer(modifier = Modifier.height(14.dp))
                                 OutlinedButton(
-                                    onClick = { restoreBackupLauncher.launch(arrayOf("*/*", "application/octet-stream", "application/json", "text/plain")) },
+                                    onClick = { restoreBackupLauncher.launch(arrayOf("application/json", "application/octet-stream", "*/*")) },
                                     shape = RoundedCornerShape(12.dp),
                                     modifier = Modifier.fillMaxWidth().height(48.dp)
                                 ) {

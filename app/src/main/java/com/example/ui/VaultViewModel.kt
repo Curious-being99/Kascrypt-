@@ -221,12 +221,25 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
             // Real XChaCha20-Poly1305 encryption of complete backup archive
             val ciphertext = CryptoManager.encryptXChaCha20Poly1305(vaultBytes, key)
             
-            KfsEngine.uploadToKaspa(
+            val result = KfsEngine.uploadToKaspa(
                 data = ciphertext,
                 fileId = UUID.randomUUID().toString(),
                 wallet = currentWallet,
                 utxos = utxoList
             )
+
+            if (result.success && currentWallet != null) {
+                try {
+                    val balanceResp = KaspaNetwork.api.getAddressBalance(currentWallet.address)
+                    val freshUtxos = KaspaNetwork.api.getAddressUtxos(currentWallet.address)
+                    val sompis = balanceResp.balance ?: 0L
+                    _kaspaWalletSompis.value = sompis
+                    _kaspaWalletBalance.value = sompis.toDouble() / 100_000_000.0
+                    _kaspaWalletUtxos.value = freshUtxos
+                } catch (ignored: Exception) {
+                    // Non-critical background refresh failure
+                }
+            }
         }
     }
 
@@ -942,79 +955,68 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                 val archiveJson = backupArchiveAdapter.toJson(archive)
                 val archiveBytes = archiveJson.toByteArray(Charsets.UTF_8)
 
-                var written = false
+                // 1. Primary standard SAF write: openOutputStream with truncate mode "wt"
+                var verifiedBytes: ByteArray? = null
 
-                // 1. Primary write method: ParcelFileDescriptor with "wt" (truncate + write) and fsync
                 try {
-                    context.contentResolver.openFileDescriptor(outputUri, "wt")?.use { pfd ->
-                        java.io.FileOutputStream(pfd.fileDescriptor).use { fos ->
-                            fos.write(archiveBytes)
-                            fos.flush()
-                            try {
-                                pfd.fileDescriptor.sync()
-                            } catch (ignored: Exception) {}
-                        }
-                        written = true
+                    context.contentResolver.openOutputStream(outputUri, "wt")?.use { stream ->
+                        stream.write(archiveBytes)
+                        stream.flush()
                     }
                 } catch (e: Exception) {
-                    // try fallback
+                    e.printStackTrace()
                 }
 
-                // 2. Fallback: ParcelFileDescriptor with "w" and fsync
-                if (!written) {
-                    try {
-                        context.contentResolver.openFileDescriptor(outputUri, "w")?.use { pfd ->
-                            java.io.FileOutputStream(pfd.fileDescriptor).use { fos ->
-                                fos.write(archiveBytes)
-                                fos.flush()
-                                try {
-                                    pfd.fileDescriptor.sync()
-                                } catch (ignored: Exception) {}
-                            }
-                            written = true
-                        }
-                    } catch (e: Exception) {
-                        // try fallback
-                    }
+                // Verify write immediately by reading back from content resolver
+                verifiedBytes = try {
+                    context.contentResolver.openInputStream(outputUri)?.use { it.readBytes() }
+                } catch (e: Exception) {
+                    null
                 }
 
-                // 3. Fallback: standard openOutputStream with "wt"
-                if (!written) {
-                    try {
-                        context.contentResolver.openOutputStream(outputUri, "wt")?.use { stream ->
-                            stream.write(archiveBytes)
-                            stream.flush()
-                            written = true
-                        }
-                    } catch (e: Exception) {
-                        // try next
-                    }
-                }
-
-                // 4. Fallback: standard openOutputStream default
-                if (!written) {
+                // 2. Fallback: default openOutputStream
+                if (verifiedBytes == null || verifiedBytes.isEmpty()) {
                     try {
                         context.contentResolver.openOutputStream(outputUri)?.use { stream ->
                             stream.write(archiveBytes)
                             stream.flush()
-                            written = true
                         }
                     } catch (e: Exception) {
-                        // failed
+                        e.printStackTrace()
+                    }
+
+                    verifiedBytes = try {
+                        context.contentResolver.openInputStream(outputUri)?.use { it.readBytes() }
+                    } catch (e: Exception) {
+                        null
                     }
                 }
 
-                if (!written) {
-                    throw IllegalArgumentException("Could not write backup bytes to selected storage location")
+                // 3. Fallback: ParcelFileDescriptor with AutoCloseOutputStream
+                if (verifiedBytes == null || verifiedBytes.isEmpty()) {
+                    try {
+                        context.contentResolver.openFileDescriptor(outputUri, "rwt")?.let { pfd ->
+                            android.os.ParcelFileDescriptor.AutoCloseOutputStream(pfd).use { stream ->
+                                stream.write(archiveBytes)
+                                stream.flush()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+
+                    verifiedBytes = try {
+                        context.contentResolver.openInputStream(outputUri)?.use { it.readBytes() }
+                    } catch (e: Exception) {
+                        null
+                    }
                 }
 
-                val statSize = try {
-                    context.contentResolver.openFileDescriptor(outputUri, "r")?.use { it.statSize } ?: -1L
-                } catch (e: Exception) {
-                    -1L
+                if (verifiedBytes == null || verifiedBytes.isEmpty()) {
+                    throw IllegalStateException("Storage provider failed to write backup data (resulted in 0 bytes). Please choose another storage directory or folder.")
                 }
 
-                val finalByteCount = if (statSize > 0) statSize else archiveBytes.size.toLong()
+                val finalByteCount = verifiedBytes.size.toLong()
 
                 withContext(Dispatchers.Main) {
                     onSuccess(currentItems.size, imageMap.size, finalByteCount)
@@ -1093,7 +1095,7 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
         )
 
         val archiveJson = backupArchiveAdapter.toJson(archive)
-        val backupFile = File(context.cacheDir, "kascrypt_backup_${System.currentTimeMillis()}.kascrypt")
+        val backupFile = File(context.cacheDir, "kascrypt_backup_${System.currentTimeMillis()}.json")
         backupFile.writeText(archiveJson, Charsets.UTF_8)
 
         return androidx.core.content.FileProvider.getUriForFile(
@@ -1125,7 +1127,7 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                 } ?: throw IllegalArgumentException("Could not read selected file from storage")
 
                 if (rawBytes.isEmpty()) {
-                    throw IllegalArgumentException("Selected backup file is empty (0 bytes). Please ensure you selected a valid .kascrypt backup file.")
+                    throw IllegalArgumentException("Selected backup file is empty (0 bytes). Please ensure you selected a valid .json or .kascrypt backup file.")
                 }
 
                 val rawText = String(rawBytes, Charsets.UTF_8)
@@ -1133,7 +1135,7 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
 
                 var payload: VaultBackupPayload? = null
 
-                // 1. Try parsing as EncryptedVaultBackupArchive (.kascrypt)
+                // 1. Try parsing as EncryptedVaultBackupArchive (.json or .kascrypt)
                 val archive = try {
                     backupArchiveAdapter.fromJson(cleanJson)
                 } catch (e: Exception) {
