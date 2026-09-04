@@ -2818,46 +2818,29 @@ fun SettingsScreen(
                                     modifier = Modifier.fillMaxWidth(),
                                     verticalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    Button(
+                                        onClick = {
+                                            viewModel.saveBackupToDownloads(
+                                                context = context,
+                                                onSuccess = { path, items, images, bytes ->
+                                                    backupStatusMessage = "Backup saved to $path! ($items items, $images images, $bytes bytes)"
+                                                    backupErrorMessage = null
+                                                    Toast.makeText(context, "Saved backup to Downloads folder!", Toast.LENGTH_SHORT).show()
+                                                },
+                                                onError = { err ->
+                                                    backupErrorMessage = err
+                                                    backupStatusMessage = null
+                                                }
+                                            )
+                                        },
+                                        enabled = rawVaultItems.isNotEmpty(),
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black),
+                                        modifier = Modifier.fillMaxWidth().height(48.dp)
                                     ) {
-                                        Button(
-                                            onClick = { createBackupLauncher.launch("kascrypt_vault_backup_${System.currentTimeMillis()}.json") },
-                                            enabled = rawVaultItems.isNotEmpty(),
-                                            shape = RoundedCornerShape(12.dp),
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black),
-                                            modifier = Modifier.weight(1f).height(48.dp)
-                                        ) {
-                                            Icon(Icons.Default.SaveAlt, contentDescription = null, modifier = Modifier.size(18.dp))
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text("Save Backup", fontWeight = FontWeight.Bold)
-                                        }
-
-                                        Button(
-                                            onClick = {
-                                                viewModel.saveBackupToDownloads(
-                                                    context = context,
-                                                    onSuccess = { path, items, images, bytes ->
-                                                        backupStatusMessage = "Backup saved to $path! ($items items, $images images, $bytes bytes)"
-                                                        backupErrorMessage = null
-                                                        Toast.makeText(context, "Saved backup to Downloads folder!", Toast.LENGTH_SHORT).show()
-                                                    },
-                                                    onError = { err ->
-                                                        backupErrorMessage = err
-                                                        backupStatusMessage = null
-                                                    }
-                                                )
-                                            },
-                                            enabled = rawVaultItems.isNotEmpty(),
-                                            shape = RoundedCornerShape(12.dp),
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA).copy(alpha = 0.2f), contentColor = Color(0xFF70C7BA)),
-                                            modifier = Modifier.weight(1f).height(48.dp)
-                                        ) {
-                                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text("To Downloads", fontWeight = FontWeight.Bold)
-                                        }
+                                        Icon(Icons.Default.SaveAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Save to Device", fontWeight = FontWeight.Bold)
                                     }
 
                                     OutlinedButton(
@@ -3150,6 +3133,18 @@ fun KaspaStorageContent(
     var manualRecordTitle by remember { mutableStateOf("") }
     var manualRecordId by remember { mutableStateOf("") }
 
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.clearKfsBroadcastState()
+        }
+    }
+
+    LaunchedEffect(subTab) {
+        if (subTab != 0) {
+            viewModel.clearKfsBroadcastState()
+        }
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         // Sub Tab Row
         TabRow(
@@ -3280,10 +3275,22 @@ fun KaspaStorageContent(
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Column(modifier = Modifier.padding(12.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Cancel, contentDescription = "Error", tint = Color(0xFFFF5252), modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Node Broadcast Notice", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge, color = Color(0xFFFF5252))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                            Icon(Icons.Default.Cancel, contentDescription = "Error", tint = Color(0xFFFF5252), modifier = Modifier.size(18.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Node Broadcast Notice", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge, color = Color(0xFFFF5252))
+                                        }
+                                        IconButton(
+                                            onClick = { viewModel.clearKfsBroadcastState() },
+                                            modifier = Modifier.size(24.dp)
+                                        ) {
+                                            Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = Color(0xFFFF5252), modifier = Modifier.size(16.dp))
+                                        }
                                     }
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text(
@@ -3305,192 +3312,47 @@ fun KaspaStorageContent(
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Column(modifier = Modifier.padding(12.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.CheckCircle, contentDescription = "Success", tint = Color(0xFF70C7BA), modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Broadcast Confirmed & Saved to History!", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge, color = Color(0xFF70C7BA))
-                                    }
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    Text("Master Manifest TxID:", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    val mTxId = result.rootTxId ?: result.manifest.fileId
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = Color(0xFF70C7BA).copy(alpha = 0.1f),
-                                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF70C7BA).copy(alpha = 0.3f)),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                try {
-                                                    val explorerUrl = "https://explorer.kaspa.org/txs/$mTxId"
-                                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(explorerUrl))
-                                                    context.startActivity(intent)
-                                                } catch (e: Exception) {
-                                                    Toast.makeText(context, "Could not open explorer: ${e.message}", Toast.LENGTH_SHORT).show()
-                                                }
-                                            }
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 10.dp, vertical = 8.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Icon(
-                                                Icons.Default.OpenInNew,
-                                                contentDescription = "Open in Explorer",
-                                                tint = Color(0xFF70C7BA),
-                                                modifier = Modifier.size(14.dp)
-                                            )
+                                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                            Icon(Icons.Default.CheckCircle, contentDescription = "Success", tint = Color(0xFF70C7BA), modifier = Modifier.size(18.dp))
                                             Spacer(modifier = Modifier.width(6.dp))
-                                            Text(
-                                                mTxId,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = Color(0xFF70C7BA),
-                                                textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
-                                                modifier = Modifier.weight(1f)
-                                            )
+                                            Text("Broadcast Confirmed & Saved to History!", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge, color = Color(0xFF70C7BA))
                                         }
-                                    }
-
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    Text("Root ID / Merkle Root:", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    val rootId = result.manifest.merkleRoot
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = Color(0xFF70C7BA).copy(alpha = 0.1f),
-                                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF70C7BA).copy(alpha = 0.3f)),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                try {
-                                                    val explorerUrl = "https://explorer.kaspa.org/txs/$rootId"
-                                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(explorerUrl))
-                                                    context.startActivity(intent)
-                                                } catch (e: Exception) {
-                                                    Toast.makeText(context, "Could not open explorer: ${e.message}", Toast.LENGTH_SHORT).show()
-                                                }
-                                            }
-                                    ) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 10.dp, vertical = 8.dp),
-                                            verticalAlignment = Alignment.CenterVertically
+                                        IconButton(
+                                            onClick = { viewModel.clearKfsBroadcastState() },
+                                            modifier = Modifier.size(24.dp)
                                         ) {
-                                            Icon(
-                                                Icons.Default.OpenInNew,
-                                                contentDescription = "Open in Explorer",
-                                                tint = Color(0xFF70C7BA),
-                                                modifier = Modifier.size(14.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text(
-                                                rootId,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = Color(0xFF70C7BA),
-                                                textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
-                                                modifier = Modifier.weight(1f)
-                                            )
+                                            Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = Color(0xFF70C7BA), modifier = Modifier.size(16.dp))
                                         }
                                     }
                                     Spacer(modifier = Modifier.height(8.dp))
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        OutlinedButton(
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Button(
                                             onClick = {
-                                                try {
-                                                    val explorerUrl = "https://explorer.kaspa.org/txs/$mTxId"
-                                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(explorerUrl))
-                                                    context.startActivity(intent)
-                                                } catch (e: Exception) {
-                                                    Toast.makeText(context, "Could not open explorer: ${e.message}", Toast.LENGTH_SHORT).show()
-                                                }
+                                                viewModel.clearKfsBroadcastState()
+                                                subTab = 2
                                             },
                                             shape = RoundedCornerShape(8.dp),
-                                            modifier = Modifier.height(36.dp)
-                                        ) {
-                                            Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(14.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text("Explorer", fontSize = 12.sp)
-                                        }
-                                        OutlinedButton(
-                                            onClick = {
-                                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                                clipboard.setPrimaryClip(ClipData.newPlainText("Kaspa TxID", mTxId))
-                                                Toast.makeText(context, "Manifest TxID copied to clipboard", Toast.LENGTH_SHORT).show()
-                                            },
-                                            shape = RoundedCornerShape(8.dp),
-                                            modifier = Modifier.height(36.dp)
-                                        ) {
-                                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text("Copy", fontSize = 12.sp)
-                                        }
-                                        OutlinedButton(
-                                            onClick = { subTab = 2 },
-                                            shape = RoundedCornerShape(8.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black),
                                             modifier = Modifier.height(36.dp)
                                         ) {
                                             Icon(Icons.Default.History, contentDescription = null, modifier = Modifier.size(14.dp))
                                             Spacer(modifier = Modifier.width(4.dp))
-                                            Text("History", fontSize = 12.sp)
+                                            Text("View in History", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                         }
-                                    }
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        Card(
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Text(
-                                    "KFS Merkle Tree & Shard Proofs:",
-                                    fontWeight = FontWeight.Bold,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = if (!result.success) Color(0xFFFF5252) else Color(0xFF70C7BA)
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text("Blake2b Root: ${result.manifest.merkleRoot}", style = MaterialTheme.typography.labelSmall)
-                                Text("Chunks: ${result.manifest.totalChunks} | Total Size: ${result.manifest.totalBytes} bytes", style = MaterialTheme.typography.labelSmall)
-
-                                if (result.logs.isNotEmpty()) {
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Text(
-                                        "Execution Logs (${result.logs.size} events):",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                        for (logLine in result.logs) {
-                                            val isLineError = logLine.contains("400", ignoreCase = true) ||
-                                                    logLine.contains("500", ignoreCase = true) ||
-                                                    logLine.contains("error", ignoreCase = true) ||
-                                                    logLine.contains("rejected", ignoreCase = true) ||
-                                                    logLine.contains("failed", ignoreCase = true) ||
-                                                    logLine.contains("notice", ignoreCase = true)
-
-                                            Row(verticalAlignment = Alignment.Top) {
-                                                Text(
-                                                    text = if (isLineError) "✖ " else "• ",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = if (isLineError) Color(0xFFFF5252) else Color(0xFF70C7BA),
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                                Text(
-                                                    text = logLine,
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    fontSize = 11.sp,
-                                                    color = if (isLineError) Color(0xFFFF5252) else MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            }
+                                        OutlinedButton(
+                                            onClick = { viewModel.clearKfsBroadcastState() },
+                                            shape = RoundedCornerShape(8.dp),
+                                            modifier = Modifier.height(36.dp)
+                                        ) {
+                                            Text("Dismiss", fontSize = 12.sp)
                                         }
                                     }
                                 }
@@ -3742,19 +3604,6 @@ fun KaspaStorageContent(
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text("Save Root ID", fontSize = 11.sp, color = Color(0xFF70C7BA))
                             }
-
-                            if (kfsRecords.isNotEmpty()) {
-                                Spacer(modifier = Modifier.width(4.dp))
-                                TextButton(
-                                    onClick = { viewModel.clearAllKfsRecords() },
-                                    modifier = Modifier.height(32.dp),
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
-                                ) {
-                                    Icon(Icons.Default.DeleteSweep, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.error)
-                                    Spacer(modifier = Modifier.width(2.dp))
-                                    Text("Clear All", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
-                                }
-                            }
                         }
                     }
 
@@ -3792,7 +3641,7 @@ fun KaspaStorageContent(
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Column(modifier = Modifier.padding(14.dp)) {
-                                        // Top Row: Title + Status Chip + Delete
+                                         // Top Row: Title + Status Chip
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
                                             verticalAlignment = Alignment.CenterVertically,
@@ -3824,13 +3673,6 @@ fun KaspaStorageContent(
                                                         else -> MaterialTheme.colorScheme.error
                                                     }
                                                 )
-                                            }
-
-                                            IconButton(
-                                                onClick = { viewModel.deleteKfsRecord(record.id) },
-                                                modifier = Modifier.size(28.dp)
-                                            ) {
-                                                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f), modifier = Modifier.size(16.dp))
                                             }
                                         }
 
@@ -3893,23 +3735,13 @@ fun KaspaStorageContent(
                                         Spacer(modifier = Modifier.height(6.dp))
 
                                         // Merkle Root / Root ID
-                                        Text("Root ID / BLAKE2b Merkle Root (Tap to view on Kaspa Explorer):", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text("Root ID / BLAKE2b Merkle Root:", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         Spacer(modifier = Modifier.height(4.dp))
                                         Surface(
                                             shape = RoundedCornerShape(8.dp),
                                             color = Color(0xFF70C7BA).copy(alpha = 0.08f),
                                             border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF70C7BA).copy(alpha = 0.25f)),
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clickable {
-                                                    try {
-                                                        val explorerUrl = "https://explorer.kaspa.org/txs/${record.merkleRoot}"
-                                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(explorerUrl))
-                                                        context.startActivity(intent)
-                                                    } catch (e: Exception) {
-                                                        Toast.makeText(context, "Could not open explorer: ${e.message}", Toast.LENGTH_SHORT).show()
-                                                    }
-                                                }
+                                            modifier = Modifier.fillMaxWidth()
                                         ) {
                                             Row(
                                                 modifier = Modifier
@@ -3920,8 +3752,8 @@ fun KaspaStorageContent(
                                             ) {
                                                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                                                     Icon(
-                                                        Icons.Default.OpenInNew,
-                                                        contentDescription = "Open in Explorer",
+                                                        Icons.Default.Key,
+                                                        contentDescription = null,
                                                         tint = Color(0xFF70C7BA),
                                                         modifier = Modifier.size(14.dp)
                                                     )
@@ -3929,8 +3761,7 @@ fun KaspaStorageContent(
                                                     Text(
                                                         record.merkleRoot,
                                                         style = MaterialTheme.typography.labelSmall,
-                                                        color = Color(0xFF70C7BA),
-                                                        textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline
+                                                        color = Color(0xFF70C7BA)
                                                     )
                                                 }
                                                 IconButton(

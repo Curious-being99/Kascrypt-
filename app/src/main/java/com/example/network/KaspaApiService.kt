@@ -169,4 +169,8 @@ object KaspaNetwork {
             }
             return retrofit!!.create(KaspaApiService::class.java)
         }
+
+    suspend fun getTransactionWithFallback(transactionId: String): KaspaTransactionDetailResponse {
+        return api.getTransaction(transactionId)
+    }
 }

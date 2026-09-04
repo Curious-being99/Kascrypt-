@@ -62,6 +62,12 @@ object KfsEngine {
     private val _lastResult = MutableStateFlow<KfsBroadcastResult?>(null)
     val lastResult = _lastResult.asStateFlow()
 
+    fun resetBroadcastState() {
+        _uploadProgress.value = null
+        _uploadStatus.value = ""
+        _lastResult.value = null
+    }
+
     /**
      * Splits arbitrary binary data into KFS-compliant chunks, computing Blake2b hashes and Merkle Root.
      */
@@ -726,27 +732,43 @@ object KfsEngine {
             throw IllegalArgumentException("Kaspa Transaction ID cannot be empty.")
         }
 
-        onProgress(0.1f, "Connecting to Kaspa node for Master Manifest (${cleanTxId.take(12)}...)...")
-        val txDetail = try {
-            KaspaNetwork.api.getTransaction(cleanTxId)
-        } catch (e: Exception) {
-            throw IllegalStateException("Failed to query Kaspa transaction $cleanTxId: ${e.message ?: "Unknown network error"}", e)
-        }
+        onProgress(0.1f, "Connecting to Kaspa nodes for Master Manifest (${cleanTxId.take(12)}...)...")
 
-        val payloadRaw = txDetail.resolvedPayload ?: ""
-        if (payloadRaw.isBlank()) {
-            throw IllegalStateException("Kaspa Transaction $cleanTxId contains no payload on the BlockDAG ledger.")
-        }
-
-        // Decode hex or raw JSON
-        val manifestJson = if (payloadRaw.trim().startsWith("{") && payloadRaw.trim().endsWith("}")) {
-            payloadRaw.trim()
+        // 1. Check if direct JSON manifest or hex-encoded manifest was passed
+        val directManifestJson = if (cleanTxId.startsWith("{") && cleanTxId.endsWith("}")) {
+            cleanTxId
         } else {
             try {
-                val bytes = CryptoManager.hexToBytes(payloadRaw.trim())
-                String(bytes, Charsets.UTF_8)
+                val decoded = String(CryptoManager.hexToBytes(cleanTxId), Charsets.UTF_8)
+                if (decoded.trim().startsWith("{") && decoded.trim().endsWith("}")) decoded.trim() else null
             } catch (_: Exception) {
+                null
+            }
+        }
+
+        val manifestJson = if (directManifestJson != null) {
+            directManifestJson
+        } else {
+            val txDetail = try {
+                KaspaNetwork.getTransactionWithFallback(cleanTxId)
+            } catch (e: Exception) {
+                throw IllegalStateException("Failed to query Kaspa transaction $cleanTxId: ${e.message ?: "Unknown network error"}", e)
+            }
+
+            val payloadRaw = txDetail.resolvedPayload ?: ""
+            if (payloadRaw.isBlank()) {
+                throw IllegalStateException("Kaspa Transaction $cleanTxId contains no payload on the BlockDAG ledger.")
+            }
+
+            if (payloadRaw.trim().startsWith("{") && payloadRaw.trim().endsWith("}")) {
                 payloadRaw.trim()
+            } else {
+                try {
+                    val bytes = CryptoManager.hexToBytes(payloadRaw.trim())
+                    String(bytes, Charsets.UTF_8)
+                } catch (_: Exception) {
+                    payloadRaw.trim()
+                }
             }
         }
 
@@ -754,7 +776,7 @@ object KfsEngine {
             manifestAdapter.fromJson(manifestJson)
         } catch (e: Exception) {
             null
-        } ?: throw IllegalStateException("Failed to parse KFS Manifest metadata from payload: $manifestJson")
+        } ?: throw IllegalStateException("Failed to parse KFS Manifest metadata from payload.")
 
         onProgress(0.25f, "Found Manifest: ${manifest.totalChunks} chunks (Merkle Root: ${manifest.merkleRoot.take(12)}...)")
 
@@ -768,7 +790,7 @@ object KfsEngine {
                 onProgress(p, "Downloading chunk ${i + 1}/${targetChunkTxIds.size} (${chunkTxId.take(8)}...)...")
 
                 val chunkTx = try {
-                    KaspaNetwork.api.getTransaction(chunkTxId)
+                    KaspaNetwork.getTransactionWithFallback(chunkTxId)
                 } catch (e: Exception) {
                     throw IllegalStateException("Failed to retrieve Chunk #${i + 1} ($chunkTxId) from Kaspa network: ${e.message}", e)
                 }

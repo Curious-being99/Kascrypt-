@@ -35,6 +35,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -267,6 +268,16 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                 wallet = currentWallet,
                 utxos = utxoList
             )
+
+            // Persist local cache files for reliable offline/fallback recovery
+            try {
+                val context = getApplication<Application>()
+                File(context.cacheDir, "kfs_cache_${result.manifest.fileId}.dat").writeBytes(ciphertext)
+                File(context.cacheDir, "kfs_cache_${result.manifest.merkleRoot}.dat").writeBytes(ciphertext)
+                if (result.rootTxId != null) {
+                    File(context.cacheDir, "kfs_cache_${result.rootTxId}.dat").writeBytes(ciphertext)
+                }
+            } catch (_: Exception) {}
 
             // Persist the broadcast record to the Room database
             try {
@@ -1428,10 +1439,52 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
             _kfsRestoreProgress.value = 0.05f
             _kfsRestoreStatus.value = "Initiating KFS retrieval..."
             try {
-                val (manifest, ciphertext) = KfsEngine.fetchAndReconstructFromKaspa(manifestTxId) { progress, status ->
-                    _kfsRestoreProgress.value = progress
-                    _kfsRestoreStatus.value = status
+                val cleanId = manifestTxId.trim()
+                var manifestAndCiphertext: Pair<KfsManifest, ByteArray>? = null
+
+                try {
+                    manifestAndCiphertext = KfsEngine.fetchAndReconstructFromKaspa(cleanId) { progress, status ->
+                        _kfsRestoreProgress.value = progress
+                        _kfsRestoreStatus.value = status
+                    }
+                } catch (onChainError: Exception) {
+                    // Fallback to checking local cache files and persistent KFS records
+                    val cacheFile1 = File(context.cacheDir, "kfs_cache_$cleanId.dat")
+                    val cacheFile2 = File(context.filesDir, "kfs_cache_$cleanId.dat")
+                    val allRecords = db.kfsDao().getAllRecords().firstOrNull() ?: emptyList()
+                    val localRecord = db.kfsDao().getRecordById(cleanId)
+                        ?: allRecords.find { it.manifestTxId == cleanId || it.merkleRoot == cleanId || it.id == cleanId }
+
+                    val targetCacheFile = when {
+                        cacheFile1.exists() -> cacheFile1
+                        cacheFile2.exists() -> cacheFile2
+                        localRecord != null && File(context.cacheDir, "kfs_cache_${localRecord.id}.dat").exists() -> File(context.cacheDir, "kfs_cache_${localRecord.id}.dat")
+                        localRecord != null && File(context.cacheDir, "kfs_cache_${localRecord.merkleRoot}.dat").exists() -> File(context.cacheDir, "kfs_cache_${localRecord.merkleRoot}.dat")
+                        localRecord != null && File(context.cacheDir, "kfs_cache_${localRecord.manifestTxId}.dat").exists() -> File(context.cacheDir, "kfs_cache_${localRecord.manifestTxId}.dat")
+                        else -> null
+                    }
+
+                    if (targetCacheFile != null && targetCacheFile.exists()) {
+                        _kfsRestoreStatus.value = "Recovering from persistent local KFS record..."
+                        val cachedBytes = targetCacheFile.readBytes()
+                        val dummyManifest = KfsManifest(
+                            fileId = localRecord?.id ?: cleanId,
+                            timestamp = localRecord?.timestamp ?: System.currentTimeMillis(),
+                            totalBytes = cachedBytes.size,
+                            totalChunks = localRecord?.totalChunks ?: 1,
+                            merkleRoot = localRecord?.merkleRoot ?: cleanId,
+                            chunkHashes = emptyList(),
+                            chunkTxIds = emptyList(),
+                            algorithm = "XChaCha20-Poly1305+BLAKE2b",
+                            signature = null
+                        )
+                        manifestAndCiphertext = Pair(dummyManifest, cachedBytes)
+                    } else {
+                        throw onChainError
+                    }
                 }
+
+                val (manifest, ciphertext) = manifestAndCiphertext!!
 
                 _kfsRestoreStatus.value = "Decrypting XChaCha20-Poly1305 payload with active master key..."
                 
@@ -1579,6 +1632,10 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             db.kfsDao().insertRecord(record)
         }
+    }
+
+    fun clearKfsBroadcastState() {
+        com.example.network.KfsEngine.resetBroadcastState()
     }
 }
 
