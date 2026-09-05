@@ -119,24 +119,42 @@ object KfsEngine {
     }
 
     /**
-     * Estimates the transaction compute mass based on Kaspa KIP-9 rules:
-     * Compute mass = serialized transaction byte size + (total sigOps * 1000).
+     * Calculates the post-Toccata multi-dimensional transaction mass based on Rusty-Kaspa consensus rules:
+     * - Compute Mass: 1 gram/byte of serialized transaction + 10 grams per output scriptPubKey byte + 1,000 grams/sigOp
+     * - Transient Mass: 1 gram/byte of transaction data (enforcing the 1,000,000 block transient limit)
+     * - Storage Mass: Contextual UTXO storage state mass
+     * The effective transaction mass is max(compute_mass, transient_mass, storage_mass).
      */
     fun estimateComputeMass(payloadHex: String, inputCount: Int = 1, outputCount: Int = 1): Long {
         val payloadBytes = if (payloadHex.isNotEmpty()) payloadHex.length / 2 else 0
-        // Wire serialization overhead:
-        // Base headers (version 2, lockTime 8, subnetworkId 20, gas 8, payloadLen 4): 42 bytes
-        // Inputs (outpoint 36, sigScript ~67, sequence 8, sigOpCount 1): ~112 bytes each
-        // Outputs (amount 8, scriptPubKey ~38): ~46 bytes each
-        // Transport/RPC protocol overhead padding: ~150 bytes
-        val txSizeBytes = 42 + (inputCount * 115) + (outputCount * 48) + payloadBytes + 150
+        // Wire serialization byte size:
+        // Base fields (version 2B, lockTime 8B, subnetworkId 20B, gas 8B, payloadLen 8B): 46 bytes
+        // Inputs (outpoint 36B, signatureScript ~67B, sequence 8B, sigOpCount 1B): ~112 bytes each
+        // Outputs (amount 8B, scriptPubKey ~36B): ~44 bytes each
+        val txSizeBytes = 46 + (inputCount * 112) + (outputCount * 44) + payloadBytes
+
+        // Post-Toccata Compute Mass parameters:
+        // 1 gram per serialized transaction byte
+        // 10 grams per output scriptPubKey byte (standard Kaspa P2PK script is 34 bytes)
+        // 1,000 grams per signature operation (sigOp)
+        val scriptPubKeyBytesPerOutput = 34
+        val outputScriptMass = outputCount * scriptPubKeyBytesPerOutput * 10L
         val sigOpsMass = inputCount * 1000L
-        return txSizeBytes + sigOpsMass
+        val computeMass = txSizeBytes * 1L + outputScriptMass + sigOpsMass
+
+        // Transient Mass (1 gram per byte)
+        val transientMass = txSizeBytes * 1L
+
+        // Storage Mass baseline for UTXO creation
+        val storageMass = outputCount * 340L
+
+        // Overall effective mass according to Rusty-Kaspa consensus
+        return maxOf(computeMass, transientMass, storageMass)
     }
 
     /**
      * Calculates the minimum standard fee in sompis required by Kaspa consensus.
-     * Kaspa standard relay fee rate is 100 sompis per unit of compute mass.
+     * Kaspa standard relay fee rate is 100 sompis per unit of transaction mass.
      * We add a 25% safety buffer and enforce a 200,000 sompis (0.002 KAS) floor.
      */
     fun calculateStandardFeeSompis(payloadHex: String, inputCount: Int = 1, outputCount: Int = 1): Long {
@@ -571,15 +589,19 @@ object KfsEngine {
         stream.write(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(gas).array())
 
         // 14. Payload Hash (32 bytes)
-        // Kaspa Consensus Rule: For native transactions (where SubnetworkID is all zeros),
-        // payloadHash is ALWAYS 32 zero bytes (0x00...00).
-        // For non-native subnetworks, payloadHash is BLAKE2b-256("TransactionSigningHash", payloadBytes).
+        // Kaspa Consensus Rule (rusty-kaspa / KIP-14):
+        // if tx.subnetwork_id.is_native() && tx.payload.is_empty() -> ZERO_HASH (32 zero bytes)
+        // Otherwise -> TransactionSigningHash over write_var_bytes (8-byte Little-Endian uint64 length + payload bytes)
         val isNativeSubnetwork = subnetworkBytes.all { it == 0.toByte() }
         val payloadBytes = if (!payloadHex.isNullOrEmpty()) CryptoManager.hexToBytes(payloadHex) else ByteArray(0)
-        val payloadHash = if (!isNativeSubnetwork && payloadBytes.isNotEmpty()) {
-            CryptoManager.hashBlake2bPersonalized(payloadBytes, tag)
-        } else {
+        val payloadHash = if (isNativeSubnetwork && payloadBytes.isEmpty()) {
             ByteArray(32)
+        } else {
+            val payloadStream = ByteArrayOutputStream()
+            // write_var_bytes: 8-byte Little-Endian uint64 length followed by payload bytes
+            payloadStream.write(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(payloadBytes.size.toLong()).array())
+            payloadStream.write(payloadBytes)
+            CryptoManager.hashBlake2bPersonalized(payloadStream.toByteArray(), tag)
         }
         stream.write(payloadHash)
 
