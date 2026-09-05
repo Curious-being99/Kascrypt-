@@ -589,19 +589,18 @@ object KfsEngine {
         stream.write(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(gas).array())
 
         // 14. Payload Hash (32 bytes)
-        // Kaspa Consensus Rule (rusty-kaspa / KIP-14):
-        // if tx.subnetwork_id.is_native() && tx.payload.is_empty() -> ZERO_HASH (32 zero bytes)
-        // Otherwise -> TransactionSigningHash over write_var_bytes (8-byte Little-Endian uint64 length + payload bytes)
+        // Kaspa Consensus Rule: For native transactions (where SubnetworkID is all zeros),
+        // payloadHash is strictly evaluated as 32 zero bytes (0x00...00).
+        // For non-native subnetworks, payloadHash is BLAKE2b-256("TransactionSigningHash", write_var_bytes(payloadBytes)).
         val isNativeSubnetwork = subnetworkBytes.all { it == 0.toByte() }
         val payloadBytes = if (!payloadHex.isNullOrEmpty()) CryptoManager.hexToBytes(payloadHex) else ByteArray(0)
-        val payloadHash = if (isNativeSubnetwork && payloadBytes.isEmpty()) {
-            ByteArray(32)
-        } else {
+        val payloadHash = if (!isNativeSubnetwork && payloadBytes.isNotEmpty()) {
             val payloadStream = ByteArrayOutputStream()
-            // write_var_bytes: 8-byte Little-Endian uint64 length followed by payload bytes
             payloadStream.write(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(payloadBytes.size.toLong()).array())
             payloadStream.write(payloadBytes)
             CryptoManager.hashBlake2bPersonalized(payloadStream.toByteArray(), tag)
+        } else {
+            ByteArray(32)
         }
         stream.write(payloadHash)
 

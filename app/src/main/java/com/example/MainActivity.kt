@@ -3125,6 +3125,8 @@ fun KaspaStorageContent(
     val kfsStatus by viewModel.kfsUploadStatus.collectAsStateWithLifecycle()
     val kfsLastResult by viewModel.kfsLastResult.collectAsStateWithLifecycle()
     val rawVaultItems by viewModel.rawVaultItems.collectAsStateWithLifecycle()
+    val isSyncingKfsHistory by viewModel.isSyncingKfsHistory.collectAsStateWithLifecycle()
+    val syncKfsHistoryStatus by viewModel.syncKfsHistoryStatus.collectAsStateWithLifecycle()
 
     var recoverTxIdInput by remember { mutableStateOf("") }
     var recoverySuccessMessage by remember { mutableStateOf<String?>(null) }
@@ -3363,6 +3365,67 @@ fun KaspaStorageContent(
 
                 1 -> {
                     // SUB-TAB 1: RECOVER FROM TXID (ON-CHAIN RECOVERY)
+                    Card(
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF70C7BA).copy(alpha = 0.12f)),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF70C7BA).copy(alpha = 0.4f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                    Icon(Icons.Default.CloudSync, contentDescription = null, tint = Color(0xFF70C7BA), modifier = Modifier.size(20.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Auto-Recover from Seed Phrase", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall, color = Color(0xFF70C7BA))
+                                }
+                                Button(
+                                    onClick = {
+                                        viewModel.syncAddressKfsHistory(
+                                            onComplete = { count, msg ->
+                                                if (count > 0) {
+                                                    recoverySuccessMessage = msg
+                                                    recoveryErrorMessage = null
+                                                } else {
+                                                    recoveryErrorMessage = msg
+                                                    recoverySuccessMessage = null
+                                                }
+                                            }
+                                        )
+                                    },
+                                    enabled = !isSyncingKfsHistory,
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(34.dp)
+                                ) {
+                                    if (isSyncingKfsHistory) {
+                                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = Color.Black)
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Scanning...", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    } else {
+                                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Scan Address History", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                            if (isSyncingKfsHistory || syncKfsHistoryStatus.isNotBlank()) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    syncKfsHistoryStatus,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
                     Text(
                         "How to Recover Your File from Kaspa Storage",
                         fontWeight = FontWeight.Bold,
@@ -3589,7 +3652,26 @@ fun KaspaStorageContent(
                             )
                         }
 
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Button(
+                                onClick = {
+                                    viewModel.syncAddressKfsHistory()
+                                },
+                                enabled = !isSyncingKfsHistory,
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black),
+                                modifier = Modifier.height(32.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                            ) {
+                                if (isSyncingKfsHistory) {
+                                    CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 2.dp, color = Color.Black)
+                                } else {
+                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                                }
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Scan On-Chain", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+
                             OutlinedButton(
                                 onClick = {
                                     manualRecordTitle = ""

@@ -57,6 +57,15 @@ data class KaspaAddressBalanceResponse(
 )
 
 @JsonClass(generateAdapter = true)
+data class KaspaAddressTxRef(
+    val transaction_id: String? = null,
+    val transactionId: String? = null
+) {
+    val resolvedTxId: String?
+        get() = transaction_id ?: transactionId
+}
+
+@JsonClass(generateAdapter = true)
 data class KaspaUtxoEntry(
     val address: String? = null,
     val outpoint: KaspaOutpoint? = null,
@@ -162,6 +171,20 @@ interface KaspaApiService {
 
     @GET("addresses/{address}/utxos")
     suspend fun getAddressUtxos(@Path("address") address: String): List<KaspaUtxoEntry>
+
+    @GET("addresses/{address}/full-transactions")
+    suspend fun getAddressFullTransactions(
+        @Path("address") address: String,
+        @retrofit2.http.Query("limit") limit: Int = 50,
+        @retrofit2.http.Query("offset") offset: Int = 0
+    ): List<KaspaTransactionDetailResponse>
+
+    @GET("addresses/{address}/transactions")
+    suspend fun getAddressTransactions(
+        @Path("address") address: String,
+        @retrofit2.http.Query("limit") limit: Int = 50,
+        @retrofit2.http.Query("offset") offset: Int = 0
+    ): List<KaspaAddressTxRef>
 
     @GET("transactions/{transactionId}")
     suspend fun getTransaction(@Path("transactionId") transactionId: String): KaspaTransactionDetailResponse

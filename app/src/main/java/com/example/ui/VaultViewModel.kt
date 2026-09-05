@@ -79,6 +79,15 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
     private val _kfsRestoreStatus = MutableStateFlow("")
     val kfsRestoreStatus = _kfsRestoreStatus.asStateFlow()
 
+    private val _isSyncingKfsHistory = MutableStateFlow(false)
+    val isSyncingKfsHistory = _isSyncingKfsHistory.asStateFlow()
+
+    private val _syncKfsHistoryStatus = MutableStateFlow("")
+    val syncKfsHistoryStatus = _syncKfsHistoryStatus.asStateFlow()
+
+    private val _discoveredKfsCount = MutableStateFlow(0)
+    val discoveredKfsCount = _discoveredKfsCount.asStateFlow()
+
     private val _uiState = MutableStateFlow<VaultUiState>(VaultUiState.Loading)
     val uiState = _uiState.asStateFlow()
 
@@ -665,10 +674,12 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
             val wallet = com.example.crypto.KaspaWalletManager.deriveWalletFromMnemonic(mnemonic)
             _kaspaWallet.value = wallet
             refreshKaspaWalletBalance()
+            syncAddressKfsHistory(wallet.address, autoRestoreIfEmpty = true)
         } catch (e: Exception) {
             val wallet = com.example.crypto.KaspaWalletManager.deriveWalletFromPrivateKey(key)
             _kaspaWallet.value = wallet
             refreshKaspaWalletBalance()
+            syncAddressKfsHistory(wallet.address, autoRestoreIfEmpty = true)
         }
     }
 
@@ -708,6 +719,7 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                 db.vaultDao().insertConfig(AppConfigEntity("kaspa_mnemonic_enc", encBase64))
                 _kaspaWallet.value = wallet
                 refreshKaspaWalletBalance()
+                syncAddressKfsHistory(wallet.address, autoRestoreIfEmpty = true)
             }
             resetAutoLockTimer()
             Pair(true, null)
@@ -1749,6 +1761,127 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearKfsBroadcastState() {
         com.example.network.KfsEngine.resetBroadcastState()
+    }
+
+    fun syncAddressKfsHistory(
+        targetAddress: String? = null,
+        autoRestoreIfEmpty: Boolean = false,
+        onComplete: ((Int, String) -> Unit)? = null
+    ) {
+        val address = targetAddress ?: _kaspaWallet.value?.address
+        if (address.isNullOrBlank()) {
+            onComplete?.invoke(0, "Kaspa address not available.")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            _isSyncingKfsHistory.value = true
+            _syncKfsHistoryStatus.value = "Scanning Kaspa BlockDAG for on-chain history..."
+            var discovered = 0
+            try {
+                // 1. Fetch transaction list for address
+                val txList = try {
+                    KaspaNetwork.api.getAddressFullTransactions(address, limit = 50)
+                } catch (e: Exception) {
+                    try {
+                        val refs = KaspaNetwork.api.getAddressTransactions(address, limit = 50)
+                        refs.mapNotNull { ref ->
+                            ref.resolvedTxId?.let { txId ->
+                                try { KaspaNetwork.getTransactionWithFallback(txId) } catch (_: Exception) { null }
+                            }
+                        }
+                    } catch (e2: Exception) {
+                        emptyList()
+                    }
+                }
+
+                _syncKfsHistoryStatus.value = "Analyzing ${txList.size} on-chain transactions for KFS payloads..."
+                val stringListAdapter = moshi.adapter<List<String>>(Types.newParameterizedType(List::class.java, String::class.java))
+
+                for (tx in txList) {
+                    val rawPayload = tx.resolvedPayload ?: continue
+                    if (rawPayload.isBlank()) continue
+
+                    val decodedPayload = if (rawPayload.trim().startsWith("{") && rawPayload.trim().endsWith("}")) {
+                        rawPayload.trim()
+                    } else {
+                        try {
+                            val bytes = CryptoManager.hexToBytes(rawPayload.trim())
+                            String(bytes, Charsets.UTF_8).trim()
+                        } catch (_: Exception) {
+                            rawPayload.trim()
+                        }
+                    }
+
+                    if (decodedPayload.contains("\"merkleRoot\"") && (decodedPayload.contains("\"totalChunks\"") || decodedPayload.contains("\"chunkHashes\"") || decodedPayload.contains("\"chunkTxIds\""))) {
+                        val manifest = try {
+                            manifestAdapter.fromJson(decodedPayload)
+                        } catch (_: Exception) {
+                            null
+                        }
+
+                        if (manifest != null && manifest.chunkTxIds.isNotEmpty()) {
+                            val txId = tx.resolvedTransactionId ?: manifest.chunkTxIds.firstOrNull() ?: UUID.randomUUID().toString()
+                            val blockTime = tx.resolvedBlockTime ?: manifest.timestamp
+                            val existing = db.kfsDao().getRecordById(manifest.fileId)
+                                ?: db.kfsDao().getAllRecords().firstOrNull()?.find { it.manifestTxId == txId || it.merkleRoot == manifest.merkleRoot }
+
+                            if (existing == null) {
+                                val record = KfsBroadcastRecordEntity(
+                                    id = manifest.fileId.ifBlank { txId },
+                                    title = "On-Chain KFS Backup (${manifest.totalChunks} chunks, ${manifest.totalBytes / 1024} KB)",
+                                    manifestTxId = txId,
+                                    merkleRoot = manifest.merkleRoot,
+                                    chunkTxIdsJson = stringListAdapter.toJson(manifest.chunkTxIds),
+                                    totalChunks = manifest.totalChunks,
+                                    totalBytes = manifest.totalBytes,
+                                    totalFeeSompis = 0L,
+                                    timestamp = blockTime,
+                                    status = "ON_CHAIN_SYNCED",
+                                    errorMessage = null
+                                )
+                                db.kfsDao().insertRecord(record)
+                                discovered++
+                            }
+                        }
+                    }
+                }
+
+                _discoveredKfsCount.value = discovered
+                val finalMsg = if (discovered > 0) {
+                    "Found $discovered on-chain KFS Master Manifest(s)!"
+                } else {
+                    "Scan complete: Up-to-date with on-chain records."
+                }
+                _syncKfsHistoryStatus.value = finalMsg
+
+                // If vault is empty, autoRestoreIfEmpty is true, and records are available
+                if (autoRestoreIfEmpty && _vaultItems.value.isEmpty() && derivedKey != null) {
+                    val allRecords = db.kfsDao().getAllRecords().firstOrNull() ?: emptyList()
+                    val latestRecord = allRecords.firstOrNull()
+                    if (latestRecord != null) {
+                        _syncKfsHistoryStatus.value = "Auto-recovering vault payload from latest on-chain record..."
+                        restoreFromKaspaTxId(
+                            manifestTxId = latestRecord.manifestTxId,
+                            onSuccess = { items, images ->
+                                _syncKfsHistoryStatus.value = "Auto-restored $items items and $images images from on-chain history!"
+                            },
+                            onError = { _ -> }
+                        )
+                    }
+                }
+
+                withContext(Dispatchers.Main) {
+                    _isSyncingKfsHistory.value = false
+                    onComplete?.invoke(discovered, finalMsg)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    _isSyncingKfsHistory.value = false
+                    _syncKfsHistoryStatus.value = "Scan error: ${e.localizedMessage}"
+                    onComplete?.invoke(0, "Error scanning on-chain history: ${e.localizedMessage}")
+                }
+            }
+        }
     }
 }
 
