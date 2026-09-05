@@ -1,45 +1,53 @@
-# Kascrypt
+# KasCrypt
 
-Kascrypt is a post-quantum secure Android local vault and cryptographic wallet engineered with modern cryptographic standards, zero-cloud architecture, and hardware-backed mobile protection.
-
----
-
-## Cryptographic Architecture & Features
-
-### 1. Zero-Knowledge Encrypted Vault
-- **XChaCha20-Poly1305 Symmetric Cipher:** All vault secrets, notes, passwords, and custom key-value pairs are encrypted using 256-bit XChaCha20 with an extended 192-bit nonce to eliminate nonce-reuse risks. Poly1305 MAC tags guarantee cryptographic authenticity and anti-tampering.
-- **Argon2id Key Derivation:** Master passwords are transformed into 256-bit encryption keys using memory-hard Argon2id (16 MB memory cost, 2 iterations, 2 lanes) to withstand brute-force, ASIC, GPU, and quantum-assisted search attacks.
-- **Local SQLite Isolation:** Encrypted records reside in an application-sandboxed SQLite database (`vault-db`) with system backups disabled (`android:allowBackup="false"`).
-
-### 2. Encrypted Image & Document Upload
-- **Zero-Unencrypted Caching:** Image files picked via the system Photo Picker are encrypted on-the-fly directly in memory using authenticated XChaCha20-Poly1305.
-- **Bounded Ingestion:** Guarded with a 25MB safety stream limit to eliminate out-of-memory crash vectors on massive RAW files.
-- **Path Traversal Shield:** Filenames are strictly canonicalized and isolated to prevent directory traversal attacks.
-- **Cryptographic File Shredding:** When an image entry is deleted, flash storage sectors are overwritten with cryptographic pseudo-random noise prior to filesystem deletion.
-- **Memory Zeroization:** Decrypted plaintext byte buffers are overwritten with zeros immediately following bitmap rendering.
-
-### 3. Native BIP-39 Kaspa Wallet Engine
-- **Standard 2,048-Word Dictionary:** Mnemonic seed generation strictly complies with the official 2,048-word BIP-39 standard using `SecureRandom` entropy.
-- **Deterministic Derivation:** Derives BIP-44 standard Kaspa addresses (`m/44'/111111'/0'/0/0`) with secp256k1 elliptic curve x-only Schnorr public keys.
-- **Full BIP-39 Passphrase Support:** Supports optional 25th-word secret passphrases during wallet derivation and import.
-- **Checksum Validation on Import:** Imported seeds are validated against the 2,048-word dictionary, word count constraints (12 or 24 words), and SHA-256 entropy checksum bits before key derivation.
-- **Encrypted Seed at Rest & Memory Zeroization:** Mnemonic phrases and private keys are encrypted with XChaCha20-Poly1305 using the Argon2id-derived root key. In-flight byte buffers are zeroed out after derivation.
-
-### 4. Post-Quantum Cryptographic Readiness
-- **Symmetric Security (Grover Resistance):** With a 256-bit key length, XChaCha20-Poly1305 provides 128 bits of security against Grover's quantum search algorithm, well above cryptographic security thresholds.
-- **Argon2id Memory Hardness:** Quantum speedups cannot bypass physical memory latency and memory-bound operations.
-- **Post-Quantum Signatures:** Incorporates BouncyCastle's Post-Quantum Provider (`BouncyCastlePQCProvider`) targeting NIST FIPS 204 ML-DSA (Dilithium lattice-based signatures) with Ed25519 fallback. Private signing keys are encrypted at rest using authenticated symmetric keys.
-
-### 5. Mobile Security & Hardening
-- **Anti-Screen Capture (`FLAG_SECURE`):** Enforces `FLAG_SECURE` to block screenshot capture, screen recording, and exposure in the Android Task Switcher.
-- **Lifecycle Auto-Lock:** Vault keys are scrubbed and state is locked immediately when the app enters the background (`onStop()`) or upon extended inactivity.
-- **Sensitive Clipboard Privacy:** Sensitive copies (passwords, private keys, seed phrases) are marked with `ClipDescription.EXTRA_IS_SENSITIVE` on Android 13+ to prevent system preview banners and keyboard logging.
-- **Class 3 Hardware Biometrics:** Biometric unlocks enforce `BIOMETRIC_STRONG` to require hardware-backed biometric sensors and block software/2D face unlocks.
-- **Backup & Extraction Prevention:** Excludes databases and shared preferences from cloud backups and device migration scripts (`data_extraction_rules.xml`, `backup_rules.xml`).
+**KasCrypt** is a post-quantum secure Android local vault, cryptographic photo safe, and native Kaspa wallet. Engineered with a **strict zero-cloud, zero-knowledge architecture**, KasCrypt protects your credentials, encrypted files, and digital assets against both classical and quantum computing threats.
 
 ---
 
-## Tech Stack
+## 🛡️ What is KasCrypt?
+
+KasCrypt combines cutting-edge post-quantum cryptography (NIST FIPS 203 ML-KEM & FIPS 204 ML-DSA) with the high-throughput Kaspa BlockDAG network to deliver the most resilient personal data storage and wallet solution on mobile.
+
+Whether storing confidential login credentials, secret notes, private photos, or transacting on Kaspa, your data remains completely encrypted on your device and under your sovereign control.
+
+---
+
+## 🚀 Key Features
+
+### 1. 🔐 Zero-Knowledge Post-Quantum Vault
+- **XChaCha20-Poly1305 AEAD Encryption:** All vault items (passwords, notes, keys, bank info, identities, secret tokens) are encrypted with 256-bit XChaCha20 and an extended 192-bit nonce to eliminate nonce-reuse vulnerabilities.
+- **Argon2id Key Derivation:** Master passwords are transformed into 256-bit encryption keys using memory-hard Argon2id (16 MB memory cost, 2 iterations, 2 lanes) to thwart brute-force, ASIC, GPU, and quantum-assisted dictionary attacks.
+- **NIST ML-DSA Post-Quantum Signatures:** Vault records and backup payloads are signed with lattice-based ML-DSA (Dilithium) to ensure tamper-proof integrity and cryptographic non-repudiation.
+- **BLAKE2b Merkle Tree Verification:** Uses cryptographic tree hashes to audit data consistency and detect unauthorized modifications.
+
+### 2. 🖼️ Encrypted Photo & Document Safe
+- **Direct Stream Ingestion:** Images and files picked via Android's Photo Picker are encrypted in memory on-the-fly before ever touching disk storage.
+- **Zero-Unencrypted Caching:** Raw unencrypted thumbnails or previews are never cached in temp folders or system media stores.
+- **Cryptographic File Shredding:** When an asset is deleted, flash storage sectors are overwritten with pseudo-random noise prior to filesystem deletion.
+- **Automatic Memory Zeroization:** Decrypted byte arrays are scrubbed immediately following on-screen bitmap rendering.
+
+### 3. ⚡ Native Kaspa Wallet (BIP-39 / BIP-44)
+- **Standard 2,048-Word Dictionary:** Generate or import standard 12-word or 24-word BIP-39 mnemonic phrases.
+- **Optional 25th-Word Passphrase:** Full support for BIP-39 security passphrases during key derivation.
+- **Deterministic Derivation:** Generates standard Kaspa addresses (`m/44'/111111'/0'/0/0`) with secp256k1 x-only Schnorr public keys.
+- **Live Network Synchronization:** Real-time balance queries, UTXO tracking, and transaction broadcasting over the Kaspa BlockDAG REST API.
+- **On-Chain KFS (Kaspa File System) Archiving:** Publish and restore encrypted vault backups directly to and from the Kaspa BlockDAG.
+
+### 4. 📦 Portable & Cross-Device Encrypted Backups
+- **Self-Contained Encrypted Archives:** Export single `.json` backup files containing all vault entries, encrypted photo assets, and Kaspa wallet credentials.
+- **Direct Migration on New Devices:** One-tap **"Restore From Backup File"** option available directly on initial app setup and lock screens for seamless device upgrades.
+- **Authenticated Signatures:** Backups are authenticated with XChaCha20-Poly1305 AEAD and ML-DSA signatures.
+
+### 5. 🔒 Hardened Mobile Security
+- **Anti-Screen Capture (`FLAG_SECURE`):** Prevents screenshots, video recordings, and task switcher preview leaks.
+- **Hardware-Backed Biometrics:** Class 3 Strong Biometric authentication leveraging Android KeyStore and Secure Element / StrongBox.
+- **Lifecycle Auto-Lock:** Instantly purges memory keys and locks the vault when the app is backgrounded or left inactive.
+- **Sensitive Clipboard Scrubbing:** Copies to clipboard are tagged as sensitive (`ClipDescription.EXTRA_IS_SENSITIVE`) on Android 13+ with automated clipboard clearing.
+- **System Backup Disablement:** SQLite databases and preferences are excluded from cloud backups and extraction scripts (`allowBackup="false"`).
+
+---
+
+## 🛠️ Tech Stack & Architecture
 
 - **Platform:** Android (Min SDK 26, Target SDK 35)
 - **Language:** Kotlin
@@ -49,18 +57,19 @@ Kascrypt is a post-quantum secure Android local vault and cryptographic wallet e
   - BouncyCastle & BouncyCastle PQC (`bcpkix-jdk18on`, `bcprov-jdk18on`, `bcpqc-jdk18on`)
   - Google Tink (XChaCha20-Poly1305)
   - BiometricX (`androidx.biometric:biometric`)
+  - Argon2 Kotlin KDF
 - **Networking:** Retrofit & OkHttp (Kaspa BlockDAG REST API)
 
 ---
 
-## Continuous Integration & Release Builds
+## 🏗️ Continuous Integration & Automated Builds
 
-The repository includes an automated GitHub Actions workflow (`.github/workflows/build-apk.yml`) that builds, packages, and publishes APKs directly to **GitHub Releases**:
-1. **`KasCrypt-debug.apk`**: Development debug build (`assembleDebug`).
-2. **`KasCrypt-release-signed.apk`**: Production release build (`assembleRelease`), signed with either repository secrets (`RELEASE_KEYSTORE_BASE64`) or an automated 10,000-day CI release keystore.
-3. **`KasCrypt-release-unsigned.apk`**: Clean unsigned release build with cryptographic signature envelopes (`META-INF`) stripped, ready for custom keystores, third-party distribution, or F-Droid/re-signing pipelines.
+KasCrypt includes an automated GitHub Actions pipeline (`.github/workflows/build-apk.yml`) that builds, verifies, and publishes release APKs on every push to `main` or version tag:
 
-### GitHub Releases (Latest Tag)
-- **Automatic Publishing:** On every push to `main`/`master`, git tag (e.g. `v1.0.0`), or workflow dispatch, the workflow automatically attaches all 3 APKs directly to the GitHub Release on the **`latest`** tag (or the pushed version tag) with `make_latest: true`.
-- **Workflow Artifacts:** In addition to GitHub Releases, builds are retained under GitHub Actions artifacts for 90 days.
+1. **`KasCrypt-release-signed.apk`**: Production release build, signed and ready for installation.
+2. **`KasCrypt-release-unsigned.apk`**: Clean release build ready for custom keystores or F-Droid distribution.
+3. **`KasCrypt-debug.apk`**: Development build with debug symbols.
+
+Every build is published to the **GitHub Releases `latest` tag** and stored in GitHub Actions workflow artifacts for 90 days.
+
 

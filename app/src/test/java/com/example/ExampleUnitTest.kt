@@ -57,7 +57,7 @@ class ExampleUnitTest {
 
     @Test
     fun cryptoManager_keyPairGenerationAndVerification_works() {
-        val keyPair = CryptoManager.generateSignKeyPairFallback()
+        val keyPair = CryptoManager.generateMLDSAKeyPair()
         val data = "Hello Post-Quantum KasCrypt".toByteArray(Charsets.UTF_8)
         val sig = CryptoManager.sign(data, keyPair.private)
         val isValid = CryptoManager.verify(data, sig, keyPair.public)
@@ -96,7 +96,9 @@ class ExampleUnitTest {
 
         val originalPayload = com.example.model.VaultBackupPayload(
             items = testItems,
-            imageAssets = imageMap
+            imageAssets = imageMap,
+            mnemonic = "apple banana cherry dog elephant fox golf hotel",
+            walletKey = "randomWalletKeySalt456"
         )
 
         val key = CryptoManager.deriveKey("masterPassword123", "randomWalletKeySalt456")
@@ -104,7 +106,7 @@ class ExampleUnitTest {
         val encryptedPayload = CryptoManager.encryptXChaCha20Poly1305(payloadJson.toByteArray(Charsets.UTF_8), key)
         val b64Payload = java.util.Base64.getEncoder().encodeToString(encryptedPayload)
 
-        val keyPair = CryptoManager.generateSignKeyPairFallback()
+        val keyPair = CryptoManager.generateMLDSAKeyPair()
         val sig = CryptoManager.sign(encryptedPayload, keyPair.private)
         val sigHex = CryptoManager.bytesToHex(sig)
 

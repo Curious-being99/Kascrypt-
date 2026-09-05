@@ -978,9 +978,21 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
+                val currentMnemonic = _kaspaWallet.value?.mnemonic ?: run {
+                    val enc = db.vaultDao().getConfig("kaspa_mnemonic_enc")
+                    if (enc != null) {
+                        try {
+                            val dec = CryptoManager.decryptXChaCha20Poly1305(kotlin.io.encoding.Base64.Default.decode(enc), key)
+                            String(dec, Charsets.UTF_8)
+                        } catch (_: Exception) { null }
+                    } else null
+                }
+
                 val payload = VaultBackupPayload(
                     items = currentItems,
-                    imageAssets = imageMap
+                    imageAssets = imageMap,
+                    mnemonic = currentMnemonic,
+                    walletKey = salt
                 )
                 val payloadJson = backupPayloadAdapter.toJson(payload)
                 val payloadPlaintext = payloadJson.toByteArray(Charsets.UTF_8)
@@ -1009,8 +1021,6 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
 
                 val archiveJson = backupArchiveAdapter.toJson(archive)
                 val archiveBytes = archiveJson.toByteArray(Charsets.UTF_8)
-
-                // 1. Primary standard SAF write: openOutputStream with "w" mode or default
                 var writeSuccess = false
                 var writeError: Exception? = null
 
@@ -1100,9 +1110,21 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
+                val currentMnemonic = _kaspaWallet.value?.mnemonic ?: run {
+                    val enc = db.vaultDao().getConfig("kaspa_mnemonic_enc")
+                    if (enc != null) {
+                        try {
+                            val dec = CryptoManager.decryptXChaCha20Poly1305(kotlin.io.encoding.Base64.Default.decode(enc), key)
+                            String(dec, Charsets.UTF_8)
+                        } catch (_: Exception) { null }
+                    } else null
+                }
+
                 val payload = VaultBackupPayload(
                     items = currentItems,
-                    imageAssets = imageMap
+                    imageAssets = imageMap,
+                    mnemonic = currentMnemonic,
+                    walletKey = salt
                 )
                 val payloadJson = backupPayloadAdapter.toJson(payload)
                 val payloadPlaintext = payloadJson.toByteArray(Charsets.UTF_8)
@@ -1209,9 +1231,21 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        val currentMnemonic = _kaspaWallet.value?.mnemonic ?: run {
+            val enc = kotlinx.coroutines.runBlocking(Dispatchers.IO) { db.vaultDao().getConfig("kaspa_mnemonic_enc") }
+            if (enc != null) {
+                try {
+                    val dec = CryptoManager.decryptXChaCha20Poly1305(kotlin.io.encoding.Base64.Default.decode(enc), key)
+                    String(dec, Charsets.UTF_8)
+                } catch (_: Exception) { null }
+            } else null
+        }
+
         val payload = VaultBackupPayload(
             items = currentItems,
-            imageAssets = imageMap
+            imageAssets = imageMap,
+            mnemonic = currentMnemonic,
+            walletKey = salt
         )
         val payloadJson = backupPayloadAdapter.toJson(payload)
         val payloadPlaintext = payloadJson.toByteArray(Charsets.UTF_8)
@@ -1474,7 +1508,7 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
         // 1. Try Moshi adapter
         try {
             val payload = backupPayloadAdapter.fromJson(clean)
-            if (payload != null && (payload.items.isNotEmpty() || payload.imageAssets.isNotEmpty())) {
+            if (payload != null && (payload.items.isNotEmpty() || payload.imageAssets.isNotEmpty() || !payload.mnemonic.isNullOrBlank())) {
                 return payload
             }
         } catch (_: Exception) {}
@@ -1510,6 +1544,9 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                 val jsonObj = org.json.JSONObject(clean)
                 val items = mutableListOf<VaultItem>()
                 val imageMap = mutableMapOf<String, String>()
+
+                val mnemonic = jsonObj.optString("mnemonic").ifBlank { jsonObj.optString("seed", jsonObj.optString("seedPhrase", "")).ifBlank { null } }
+                val walletKey = jsonObj.optString("walletKey").ifBlank { jsonObj.optString("salt", jsonObj.optString("saltHex", "")).ifBlank { null } }
 
                 // Extract imageAssets map
                 val imgObj = jsonObj.optJSONObject("imageAssets") ?: jsonObj.optJSONObject("images") ?: jsonObj.optJSONObject("assets")
@@ -1548,8 +1585,8 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
-                if (items.isNotEmpty() || imageMap.isNotEmpty()) {
-                    return VaultBackupPayload(items = items, imageAssets = imageMap)
+                if (items.isNotEmpty() || imageMap.isNotEmpty() || !mnemonic.isNullOrBlank()) {
+                    return VaultBackupPayload(items = items, imageAssets = imageMap, mnemonic = mnemonic, walletKey = walletKey)
                 }
             }
         } catch (_: Exception) {}
@@ -1567,10 +1604,6 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
             onError("Vault must be unlocked to import and decrypt backup")
             return
         }
-        val priv = privateKey ?: run {
-            onError("Vault keys not initialized")
-            return
-        }
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -1585,8 +1618,6 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                 val rawText = String(rawBytes, Charsets.UTF_8).trim().removePrefix("\uFEFF").trim()
 
                 var payload: VaultBackupPayload? = null
-
-                // 1. Try extracting encrypted payload Base64 string from JSON object if encrypted
                 var encPayloadBase64: String? = null
                 var saltHex: String? = null
 
@@ -1613,6 +1644,8 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                     } catch (_: Exception) {}
                 }
 
+                var payloadDecryptionKey: ByteArray? = null
+
                 if (!encPayloadBase64.isNullOrBlank()) {
                     val encryptedBytes = try {
                         android.util.Base64.decode(encPayloadBase64, android.util.Base64.NO_WRAP)
@@ -1620,39 +1653,63 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                         android.util.Base64.decode(encPayloadBase64, android.util.Base64.DEFAULT)
                     }
 
-                    // Decrypt using active vault key
-                    var decryptedBytes: ByteArray? = try {
-                        CryptoManager.decryptXChaCha20Poly1305(encryptedBytes, key)
-                    } catch (_: Exception) { null }
+                    // Build candidate keys
+                    val candidateKeys = mutableListOf<ByteArray>()
+                    candidateKeys.add(key)
 
-                    // Fallback: Try session password + salt
-                    if (decryptedBytes == null && activeSessionPassword != null && !saltHex.isNullOrBlank()) {
+                    val saltCandidates = mutableListOf<String>()
+                    if (!saltHex.isNullOrBlank()) {
                         try {
-                            val archiveSalt = try { String(CryptoManager.hexToBytes(saltHex), Charsets.UTF_8) } catch (_: Exception) { saltHex }
-                            val altKey = CryptoManager.deriveKey(activeSessionPassword!!, archiveSalt)
-                            decryptedBytes = CryptoManager.decryptXChaCha20Poly1305(encryptedBytes, altKey)
+                            val decoded = String(CryptoManager.hexToBytes(saltHex), Charsets.UTF_8)
+                            if (decoded.isNotBlank()) saltCandidates.add(decoded)
+                        } catch (_: Exception) {}
+                        saltCandidates.add(saltHex)
+                    }
+                    walletKey?.let { saltCandidates.add(it) }
+                    saltCandidates.add("")
+
+                    val passCandidates = mutableListOf<String>()
+                    activeSessionPassword?.let { if (it.isNotBlank()) passCandidates.add(it) }
+                    _kaspaWallet.value?.mnemonic?.let { if (it.isNotBlank()) passCandidates.add(it) }
+
+                    for (p in passCandidates) {
+                        for (s in saltCandidates) {
+                            try {
+                                candidateKeys.add(CryptoManager.deriveKey(p, s))
+                            } catch (_: Exception) {}
+                        }
+                    }
+
+                    var decryptedBytes: ByteArray? = null
+                    for (cand in candidateKeys) {
+                        try {
+                            val dec = CryptoManager.decryptXChaCha20Poly1305(encryptedBytes, cand)
+                            decryptedBytes = dec
+                            payloadDecryptionKey = cand
+                            break
                         } catch (_: Exception) {}
                     }
 
                     if (decryptedBytes == null) {
-                        throw IllegalStateException("Decryption failed: Key mismatch. Ensure you are logged into the vault using the master password that created this backup.")
+                        throw IllegalStateException("Decryption failed: Key mismatch. Ensure you are logged into the vault using the master password or seed phrase that created this backup.")
                     }
 
                     val payloadJson = String(decryptedBytes, Charsets.UTF_8)
                     payload = parseVaultPayloadFlexible(payloadJson)
                 }
 
-                // 2. Fallback: Parse unencrypted raw text as JSON payload
+                // Fallback 1: Parse unencrypted raw text as JSON payload
                 if (payload == null) {
                     payload = parseVaultPayloadFlexible(rawText)
                 }
 
-                // 3. Fallback: Check if rawText is raw Base64 string directly
+                // Fallback 2: Check if rawText is raw Base64 string directly
                 if (payload == null && !rawText.startsWith("{") && !rawText.startsWith("[")) {
                     try {
                         val decodedBytes = android.util.Base64.decode(rawText, android.util.Base64.DEFAULT)
                         val decrypted = try { CryptoManager.decryptXChaCha20Poly1305(decodedBytes, key) } catch (_: Exception) { null }
                         if (decrypted != null) {
+                            payloadDecryptionKey = key
                             payload = parseVaultPayloadFlexible(String(decrypted, Charsets.UTF_8))
                         }
                     } catch (_: Exception) {}
@@ -1662,10 +1719,26 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                     throw IllegalArgumentException("Invalid or unrecognized backup JSON format")
                 }
 
-                if (payload.items.isEmpty() && payload.imageAssets.isEmpty()) {
-                    throw IllegalArgumentException("Backup JSON was parsed, but contains no items or images to restore.")
+                if (payload.items.isEmpty() && payload.imageAssets.isEmpty() && payload.mnemonic.isNullOrBlank()) {
+                    throw IllegalArgumentException("Backup JSON was parsed, but contains no items, images, or seed phrase to restore.")
                 }
 
+                // Ensure ML-DSA private key is initialized for signing
+                var signingPriv = privateKey
+                if (signingPriv == null) {
+                    try {
+                        val kp = CryptoManager.generateMLDSAKeyPair()
+                        signingPriv = kp.private
+                        publicKey = kp.public
+                        privateKey = kp.private
+                        val encPriv = CryptoManager.encryptXChaCha20Poly1305(kp.private.encoded, key)
+                        db.vaultDao().insertConfig(AppConfigEntity("ml_dsa_priv", kotlin.io.encoding.Base64.Default.encode(encPriv)))
+                        db.vaultDao().insertConfig(AppConfigEntity("ml_dsa_pub", kotlin.io.encoding.Base64.Default.encode(kp.public.encoded)))
+                        db.vaultDao().insertConfig(AppConfigEntity("ml_dsa_algo", "ML-DSA-65"))
+                    } catch (_: Exception) {}
+                }
+
+                // Restore image assets safely
                 var restoredImages = 0
                 for ((filename, b64Data) in payload.imageAssets) {
                     try {
@@ -1678,24 +1751,27 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                                 android.util.Base64.decode(b64Data, android.util.Base64.DEFAULT)
                             }
 
-                            // Check if image is raw unencrypted photo vs encrypted
                             val isRawImage = data.size > 4 && (
                                 (data[0] == 0xFF.toByte() && data[1] == 0xD8.toByte()) ||
-                                (data[0] == 0x89.toByte() && data[1] == 'P'.toByte() && data[2] == 'N'.toByte()) ||
-                                (data[0] == 'G'.toByte() && data[1] == 'I'.toByte() && data[2] == 'F'.toByte())
+                                (data[0] == 0x89.toByte() && data[1] == 'P'.toByte() && data[2] == 'N'.toByte() && data[3] == 'G'.toByte()) ||
+                                (data[0] == 'G'.toByte() && data[1] == 'I'.toByte() && data[2] == 'F'.toByte()) ||
+                                (data[0] == 'R'.toByte() && data[1] == 'I'.toByte() && data[2] == 'F'.toByte() && data[3] == 'F'.toByte()) ||
+                                (data[0] == 0x42.toByte() && data[1] == 0x4D.toByte())
                             )
 
-                            val finalImageBytes = if (isRawImage) {
-                                CryptoManager.encryptXChaCha20Poly1305(data, key)
+                            val rawImageBytes = if (isRawImage) {
+                                data
                             } else {
-                                try {
-                                    CryptoManager.decryptXChaCha20Poly1305(data, key)
-                                    data // Already correctly encrypted
-                                } catch (_: Exception) {
-                                    CryptoManager.encryptXChaCha20Poly1305(data, key)
+                                var dec: ByteArray? = if (payloadDecryptionKey != null) {
+                                    try { CryptoManager.decryptXChaCha20Poly1305(data, payloadDecryptionKey) } catch (_: Exception) { null }
+                                } else null
+                                if (dec == null) {
+                                    dec = try { CryptoManager.decryptXChaCha20Poly1305(data, key) } catch (_: Exception) { null }
                                 }
+                                dec ?: data
                             }
 
+                            val finalImageBytes = CryptoManager.encryptXChaCha20Poly1305(rawImageBytes, key)
                             imgFile.writeBytes(finalImageBytes)
                             restoredImages++
                         }
@@ -1704,6 +1780,224 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
+                // Restore items
+                var restoredItems = 0
+                for (item in payload.items) {
+                    val itemId = if (item.id.isBlank()) java.util.UUID.randomUUID().toString() else item.id
+                    val itemToSave = item.copy(id = itemId)
+                    val itemJson = vaultItemAdapter.toJson(itemToSave)
+                    val plaintext = itemJson.toByteArray(Charsets.UTF_8)
+                    val ciphertext = CryptoManager.encryptXChaCha20Poly1305(plaintext, key)
+                    val signature = if (signingPriv != null) {
+                        try { CryptoManager.sign(ciphertext, signingPriv) } catch (e: Exception) { ByteArray(0) }
+                    } else ByteArray(0)
+
+                    val entity = VaultEntryEntity(
+                        id = itemId,
+                        ciphertext = ciphertext,
+                        signature = signature
+                    )
+                    db.vaultDao().insertEntry(entity)
+                    restoredItems++
+                }
+
+                // Restore Kaspa Seed Phrase if present and wallet not set
+                if (!payload.mnemonic.isNullOrBlank() && _kaspaWallet.value == null) {
+                    try {
+                        importKaspaSeed(payload.mnemonic)
+                    } catch (_: Exception) {}
+                }
+
+                loadItems()
+                resetAutoLockTimer()
+
+                withContext(Dispatchers.Main) {
+                    onSuccess(restoredItems, restoredImages)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    onError(e.localizedMessage ?: "Failed to restore backup")
+                }
+            }
+        }
+    }
+
+    fun restoreVaultFromBackupDirectly(
+        context: Context,
+        inputUri: android.net.Uri,
+        password: String,
+        enableBiometrics: Boolean,
+        onSuccess: (itemCount: Int, imageCount: Int) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val rawBytes = context.contentResolver.openInputStream(inputUri)?.use { stream ->
+                    stream.readBytes()
+                } ?: throw IllegalArgumentException("Could not read selected file from storage")
+
+                if (rawBytes.isEmpty()) {
+                    throw IllegalArgumentException("Selected backup file is empty (0 bytes).")
+                }
+
+                val rawText = String(rawBytes, Charsets.UTF_8).trim().removePrefix("\uFEFF").trim()
+
+                var encPayloadBase64: String? = null
+                var saltHex: String? = null
+
+                val archive = try { backupArchiveAdapter.fromJson(rawText) } catch (_: Exception) { null }
+                if (archive != null && !archive.encryptedPayloadBase64.isNullOrBlank()) {
+                    encPayloadBase64 = archive.encryptedPayloadBase64
+                    saltHex = archive.saltHex
+                } else if (rawText.startsWith("{")) {
+                    try {
+                        val jsonObj = org.json.JSONObject(rawText)
+                        if (jsonObj.has("encryptedPayloadBase64")) {
+                            encPayloadBase64 = jsonObj.optString("encryptedPayloadBase64")
+                        } else if (jsonObj.has("encryptedPayload")) {
+                            encPayloadBase64 = jsonObj.optString("encryptedPayload")
+                        } else if (jsonObj.has("payload")) {
+                            encPayloadBase64 = jsonObj.optString("payload")
+                        }
+                        if (jsonObj.has("saltHex")) {
+                            saltHex = jsonObj.optString("saltHex")
+                        } else if (jsonObj.has("salt")) {
+                            saltHex = jsonObj.optString("salt")
+                        }
+                    } catch (_: Exception) {}
+                }
+
+                var payload: VaultBackupPayload? = null
+                var masterKey: ByteArray? = null
+                var finalSalt: String = ""
+
+                if (!encPayloadBase64.isNullOrBlank()) {
+                    val encryptedBytes = try {
+                        android.util.Base64.decode(encPayloadBase64, android.util.Base64.NO_WRAP)
+                    } catch (_: Exception) {
+                        android.util.Base64.decode(encPayloadBase64, android.util.Base64.DEFAULT)
+                    }
+
+                    val saltCandidates = mutableListOf<String>()
+                    if (!saltHex.isNullOrBlank()) {
+                        try {
+                            val decoded = String(CryptoManager.hexToBytes(saltHex), Charsets.UTF_8)
+                            if (decoded.isNotBlank()) saltCandidates.add(decoded)
+                        } catch (_: Exception) {}
+                        saltCandidates.add(saltHex)
+                    }
+                    saltCandidates.add("")
+
+                    var decryptedBytes: ByteArray? = null
+                    for (s in saltCandidates) {
+                        try {
+                            val candidateKey = CryptoManager.deriveKey(password, s)
+                            decryptedBytes = CryptoManager.decryptXChaCha20Poly1305(encryptedBytes, candidateKey)
+                            masterKey = candidateKey
+                            finalSalt = if (s.isNotBlank()) s else UUID.randomUUID().toString()
+                            break
+                        } catch (_: Exception) {}
+                    }
+
+                    if (decryptedBytes == null || masterKey == null) {
+                        throw IllegalStateException("Decryption failed: Incorrect password. Please enter the master password used to create this backup file.")
+                    }
+
+                    val payloadJson = String(decryptedBytes, Charsets.UTF_8)
+                    payload = parseVaultPayloadFlexible(payloadJson)
+                }
+
+                if (payload == null) {
+                    payload = parseVaultPayloadFlexible(rawText)
+                    if (payload != null) {
+                        finalSalt = UUID.randomUUID().toString()
+                        masterKey = CryptoManager.deriveKey(password, finalSalt)
+                    }
+                }
+
+                if (payload == null || masterKey == null) {
+                    throw IllegalArgumentException("Unrecognized or corrupted backup file format.")
+                }
+
+                val key = masterKey
+                if (finalSalt.isBlank()) {
+                    finalSalt = payload.walletKey ?: UUID.randomUUID().toString()
+                }
+
+                // Initialize Database and App Config
+                walletKey = finalSalt
+                db.vaultDao().insertConfig(AppConfigEntity("wallet_key", finalSalt))
+
+                // Auth Verifier
+                val verifierBytes = "KASCRYPT_VERIFIER_OK".toByteArray(Charsets.UTF_8)
+                val encVerifier = CryptoManager.encryptXChaCha20Poly1305(verifierBytes, key)
+                val verifierB64 = kotlin.io.encoding.Base64.Default.encode(encVerifier)
+                db.vaultDao().insertConfig(AppConfigEntity("auth_verifier", verifierB64))
+
+                // ML-DSA Keypair
+                val kp = CryptoManager.generateMLDSAKeyPair()
+                privateKey = kp.private
+                publicKey = kp.public
+                val privBytes = CryptoManager.encryptXChaCha20Poly1305(kp.private.encoded, key)
+                db.vaultDao().insertConfig(AppConfigEntity("ml_dsa_priv", kotlin.io.encoding.Base64.Default.encode(privBytes)))
+                db.vaultDao().insertConfig(AppConfigEntity("ml_dsa_pub", kotlin.io.encoding.Base64.Default.encode(kp.public.encoded)))
+                db.vaultDao().insertConfig(AppConfigEntity("ml_dsa_algo", "ML-DSA-65"))
+
+                // Restore Mnemonic
+                if (!payload.mnemonic.isNullOrBlank()) {
+                    val mBytes = payload.mnemonic.toByteArray(Charsets.UTF_8)
+                    val encM = CryptoManager.encryptXChaCha20Poly1305(mBytes, key)
+                    mBytes.fill(0)
+                    db.vaultDao().insertConfig(AppConfigEntity("kaspa_mnemonic_enc", kotlin.io.encoding.Base64.Default.encode(encM)))
+                    try {
+                        val wallet = com.example.crypto.KaspaWalletManager.deriveWalletFromMnemonic(payload.mnemonic)
+                        _kaspaWallet.value = wallet
+                    } catch (_: Exception) {}
+                } else {
+                    val newWallet = com.example.crypto.KaspaWalletManager.createWallet(12)
+                    val mBytes = newWallet.mnemonic.toByteArray(Charsets.UTF_8)
+                    val encM = CryptoManager.encryptXChaCha20Poly1305(mBytes, key)
+                    mBytes.fill(0)
+                    db.vaultDao().insertConfig(AppConfigEntity("kaspa_mnemonic_enc", kotlin.io.encoding.Base64.Default.encode(encM)))
+                    _kaspaWallet.value = newWallet
+                }
+
+                // Restore Image Assets
+                var restoredImages = 0
+                for ((filename, b64Data) in payload.imageAssets) {
+                    try {
+                        if (b64Data.isNotBlank()) {
+                            val sanitizedName = File(filename).name
+                            val imgFile = File(context.filesDir, sanitizedName)
+                            val data = try {
+                                android.util.Base64.decode(b64Data, android.util.Base64.NO_WRAP)
+                            } catch (_: Exception) {
+                                android.util.Base64.decode(b64Data, android.util.Base64.DEFAULT)
+                            }
+                            val isRawImage = data.size > 4 && (
+                                (data[0] == 0xFF.toByte() && data[1] == 0xD8.toByte()) ||
+                                (data[0] == 0x89.toByte() && data[1] == 'P'.toByte() && data[2] == 'N'.toByte() && data[3] == 'G'.toByte()) ||
+                                (data[0] == 'G'.toByte() && data[1] == 'I'.toByte() && data[2] == 'F'.toByte()) ||
+                                (data[0] == 'R'.toByte() && data[1] == 'I'.toByte() && data[2] == 'F'.toByte() && data[3] == 'F'.toByte()) ||
+                                (data[0] == 0x42.toByte() && data[1] == 0x4D.toByte())
+                            )
+                            val rawImg = if (isRawImage) {
+                                data
+                            } else {
+                                try { CryptoManager.decryptXChaCha20Poly1305(data, key) } catch (_: Exception) { data }
+                            }
+                            val finalBytes = CryptoManager.encryptXChaCha20Poly1305(rawImg, key)
+                            imgFile.writeBytes(finalBytes)
+                            restoredImages++
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+
+                // Clear & Insert Vault Items
+                db.vaultDao().clearAllEntries()
                 var restoredItems = 0
                 for (item in payload.items) {
                     val itemId = if (item.id.isBlank()) java.util.UUID.randomUUID().toString() else item.id
@@ -1712,8 +2006,8 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                     val plaintext = itemJson.toByteArray(Charsets.UTF_8)
                     val ciphertext = CryptoManager.encryptXChaCha20Poly1305(plaintext, key)
                     val signature = try {
-                        CryptoManager.sign(ciphertext, priv)
-                    } catch (e: Exception) {
+                        CryptoManager.sign(ciphertext, kp.private)
+                    } catch (_: Exception) {
                         ByteArray(0)
                     }
                     val entity = VaultEntryEntity(
@@ -1725,7 +2019,24 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                     restoredItems++
                 }
 
+                // Biometrics if requested
+                if (enableBiometrics) {
+                    val encryptedPayload = BiometricAuthManager.encryptMasterSecret(password)
+                    if (encryptedPayload != null) {
+                        db.vaultDao().insertConfig(AppConfigEntity("biometric_enabled", "true"))
+                        db.vaultDao().insertConfig(AppConfigEntity("biometric_payload", encryptedPayload.first))
+                        db.vaultDao().insertConfig(AppConfigEntity("biometric_iv", encryptedPayload.second))
+                        _isBiometricEnabled.value = true
+                    }
+                }
+
+                derivedKey = key
+                activeSessionPassword = password
                 loadItems()
+                refreshKaspaWalletBalance()
+                _kaspaWallet.value?.address?.let { syncAddressKfsHistory(it, autoRestoreIfEmpty = false) }
+
+                _uiState.value = VaultUiState.Unlocked
                 resetAutoLockTimer()
 
                 withContext(Dispatchers.Main) {

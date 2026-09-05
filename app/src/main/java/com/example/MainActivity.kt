@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.provider.MediaStore
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -74,6 +75,11 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Enforce anti-screen capture, screen recording prevention, and task-switcher privacy
+        window.setFlags(
+            WindowManager.LayoutParams.FLAG_SECURE,
+            WindowManager.LayoutParams.FLAG_SECURE
+        )
         enableEdgeToEdge()
         viewModel.updateBiometricHardwareStatus(this)
         
@@ -95,7 +101,10 @@ class MainActivity : FragmentActivity() {
                         }
                         is VaultUiState.Setup -> SetupScreen(
                             isBiometricAvailable = biometricHardwareStatus == BiometricAuthManager.BiometricStatus.AVAILABLE,
-                            onSetup = { pw, enableBio -> viewModel.setup(pw, enableBio) }
+                            onSetup = { pw, enableBio -> viewModel.setup(pw, enableBio) },
+                            onRestoreBackup = { uri, pw, enableBio, onSucc, onErr ->
+                                viewModel.restoreVaultFromBackupDirectly(this@MainActivity, uri, pw, enableBio, onSucc, onErr)
+                            }
                         )
                         is VaultUiState.Locked -> {
                             val context = LocalContext.current
@@ -133,7 +142,10 @@ class MainActivity : FragmentActivity() {
                                 isBiometricEnabled = isBiometricEnabled,
                                 biometricHardwareStatus = biometricHardwareStatus,
                                 errorMessage = viewModel.unlockErrorMessage.collectAsStateWithLifecycle().value,
-                                isUnlocking = viewModel.isUnlocking.collectAsStateWithLifecycle().value
+                                isUnlocking = viewModel.isUnlocking.collectAsStateWithLifecycle().value,
+                                onRestoreBackup = { uri, pw, enableBio, onSucc, onErr ->
+                                    viewModel.restoreVaultFromBackupDirectly(this@MainActivity, uri, pw, enableBio, onSucc, onErr)
+                                }
                             )
                         }
                         is VaultUiState.Unlocked -> VaultScreen(viewModel)
@@ -198,9 +210,132 @@ fun KascryptHeader() {
 }
 
 @Composable
+fun RestoreDirectDialog(
+    fileUri: Uri,
+    isBiometricAvailable: Boolean,
+    onDismiss: () -> Unit,
+    onRestore: (password: String, enableBiometrics: Boolean, onSuccess: (Int, Int) -> Unit, onError: (String) -> Unit) -> Unit
+) {
+    var password by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
+    var enableBiometrics by remember { mutableStateOf(isBiometricAvailable) }
+    var isRestoring by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+
+    AlertDialog(
+        onDismissRequest = { if (!isRestoring) onDismiss() },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.FileOpen, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(modifier = Modifier.width(10.dp))
+                Text("Restore Vault Backup", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "Enter the master password used to encrypt this backup file to restore all vault entries, Kaspa wallet, seed phrase, and photos.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { 
+                        password = it
+                        errorMessage = null 
+                    },
+                    label = { Text("Master Password") },
+                    visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                            Icon(
+                                imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (passwordVisible) "Hide password" else "Show password"
+                            )
+                        }
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().testTag("restore_password_input")
+                )
+
+                if (isBiometricAvailable) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Enable Biometrics", style = MaterialTheme.typography.bodyMedium)
+                        Switch(
+                            checked = enableBiometrics,
+                            onCheckedChange = { enableBiometrics = it }
+                        )
+                    }
+                }
+
+                if (errorMessage != null) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = errorMessage!!,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(8.dp)
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = password.isNotBlank() && !isRestoring,
+                onClick = {
+                    val p = password.trim()
+                    if (p.isEmpty()) return@Button
+                    isRestoring = true
+                    errorMessage = null
+                    onRestore(p, enableBiometrics, { items, images ->
+                        isRestoring = false
+                        Toast.makeText(context, "Vault successfully restored! ($items items, $images photos)", Toast.LENGTH_LONG).show()
+                        onDismiss()
+                    }, { err ->
+                        isRestoring = false
+                        errorMessage = err
+                    })
+                }
+            ) {
+                if (isRestoring) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("RESTORING...")
+                } else {
+                    Text("RESTORE VAULT")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(
+                enabled = !isRestoring,
+                onClick = onDismiss
+            ) {
+                Text("CANCEL")
+            }
+        }
+    )
+}
+
+@Composable
 fun SetupScreen(
     isBiometricAvailable: Boolean,
-    onSetup: (String, Boolean) -> Unit
+    onSetup: (String, Boolean) -> Unit,
+    onRestoreBackup: ((Uri, String, Boolean, (Int, Int) -> Unit, (String) -> Unit) -> Unit)? = null
 ) {
     var password by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
@@ -208,11 +343,21 @@ fun SetupScreen(
     var confirmVisible by remember { mutableStateOf(false) }
     var enableBiometrics by remember { mutableStateOf(isBiometricAvailable) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var selectedBackupUri by remember { mutableStateOf<Uri?>(null) }
+
+    val restoreLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            selectedBackupUri = uri
+        }
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp),
+            .padding(24.dp)
+            .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -376,6 +521,54 @@ fun SetupScreen(
         ) {
             Text("INITIALIZE SECURE VAULT", fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
         }
+
+        if (onRestoreBackup != null) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                HorizontalDivider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.outlineVariant)
+                Text(
+                    "  OR RESTORE EXISTING  ",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    letterSpacing = 1.sp
+                )
+                HorizontalDivider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.outlineVariant)
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+
+            OutlinedButton(
+                onClick = {
+                    try {
+                        restoreLauncher.launch(arrayOf("*/*", "application/json"))
+                    } catch (e: Exception) {
+                        try { restoreLauncher.launch(arrayOf("*/*")) } catch (_: Exception) {}
+                    }
+                },
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+                    .testTag("restore_from_file_btn")
+            ) {
+                Icon(Icons.Default.FileOpen, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("RESTORE FROM BACKUP FILE", fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+
+    if (selectedBackupUri != null && onRestoreBackup != null) {
+        RestoreDirectDialog(
+            fileUri = selectedBackupUri!!,
+            isBiometricAvailable = isBiometricAvailable,
+            onDismiss = { selectedBackupUri = null },
+            onRestore = { pw, bio, onSucc, onErr ->
+                onRestoreBackup(selectedBackupUri!!, pw, bio, onSucc, onErr)
+            }
+        )
     }
 }
 
@@ -387,11 +580,21 @@ fun LockedScreen(
     isBiometricEnabled: Boolean,
     biometricHardwareStatus: BiometricAuthManager.BiometricStatus,
     errorMessage: String?,
-    isUnlocking: Boolean
+    isUnlocking: Boolean,
+    onRestoreBackup: ((Uri, String, Boolean, (Int, Int) -> Unit, (String) -> Unit) -> Unit)? = null
 ) {
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
     var showResetDialog by remember { mutableStateOf(false) }
+    var selectedBackupUri by remember { mutableStateOf<Uri?>(null) }
+
+    val restoreLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            selectedBackupUri = uri
+        }
+    }
 
     val canUseBiometrics = isBiometricEnabled && biometricHardwareStatus == BiometricAuthManager.BiometricStatus.AVAILABLE
 
@@ -576,6 +779,25 @@ fun LockedScreen(
             }
         }
 
+        if (onRestoreBackup != null) {
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = {
+                    try {
+                        restoreLauncher.launch(arrayOf("*/*", "application/json"))
+                    } catch (e: Exception) {
+                        try { restoreLauncher.launch(arrayOf("*/*")) } catch (_: Exception) {}
+                    }
+                },
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth().height(48.dp)
+            ) {
+                Icon(Icons.Default.FileOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("RESTORE FROM BACKUP FILE", fontWeight = FontWeight.SemiBold)
+            }
+        }
+
         Spacer(modifier = Modifier.height(12.dp))
         TextButton(
             onClick = { showResetDialog = true }
@@ -586,6 +808,17 @@ fun LockedScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+
+    if (selectedBackupUri != null && onRestoreBackup != null) {
+        RestoreDirectDialog(
+            fileUri = selectedBackupUri!!,
+            isBiometricAvailable = canUseBiometrics,
+            onDismiss = { selectedBackupUri = null },
+            onRestore = { pw, bio, onSucc, onErr ->
+                onRestoreBackup(selectedBackupUri!!, pw, bio, onSucc, onErr)
+            }
+        )
     }
 
     if (showResetDialog) {

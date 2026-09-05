@@ -17,5 +17,7 @@ data class EncryptedVaultBackupArchive(
 @JsonClass(generateAdapter = true)
 data class VaultBackupPayload(
     val items: List<VaultItem>,
-    val imageAssets: Map<String, String> = emptyMap() // filename -> Base64 ciphertext
+    val imageAssets: Map<String, String> = emptyMap(), // filename -> Base64 ciphertext
+    val mnemonic: String? = null,
+    val walletKey: String? = null
 )
