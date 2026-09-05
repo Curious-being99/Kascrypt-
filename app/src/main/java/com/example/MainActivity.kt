@@ -209,11 +209,12 @@ fun KascryptHeader() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RestoreDirectDialog(
+fun RestoreVaultScreen(
     fileUri: Uri,
     isBiometricAvailable: Boolean,
-    onDismiss: () -> Unit,
+    onBack: () -> Unit,
     onRestore: (password: String, enableBiometrics: Boolean, onSuccess: (Int, Int) -> Unit, onError: (String) -> Unit) -> Unit
 ) {
     var password by remember { mutableStateOf("") }
@@ -223,77 +224,155 @@ fun RestoreDirectDialog(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
 
-    AlertDialog(
-        onDismissRequest = { if (!isRestoring) onDismiss() },
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.FileOpen, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                Spacer(modifier = Modifier.width(10.dp))
-                Text("Restore Vault Backup", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            }
-        },
-        text = {
-            Column(modifier = Modifier.fillMaxWidth()) {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp, vertical = 16.dp)
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = { if (!isRestoring) onBack() },
+                    enabled = !isRestoring
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    "Enter the master password used to encrypt this backup file to restore all vault entries, Kaspa wallet, seed phrase, and photos.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    "Restore Vault Backup",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground
                 )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(72.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primaryContainer)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.FileOpen,
+                    contentDescription = null,
+                    modifier = Modifier.size(36.dp),
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = "Decrypt & Restore Vault",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "Enter the master password used to encrypt this backup file. All vault records, Kaspa wallet, seed phrase, and photos will be decrypted and restored.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(28.dp))
+
+            OutlinedTextField(
+                value = password,
+                onValueChange = { 
+                    password = it
+                    errorMessage = null 
+                },
+                label = { Text("Master Password") },
+                placeholder = { Text("Enter backup master password") },
+                visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                trailingIcon = {
+                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                        Icon(
+                            imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                            contentDescription = if (passwordVisible) "Hide password" else "Show password"
+                        )
+                    }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth().testTag("restore_password_input")
+            )
+
+            if (isBiometricAvailable) {
                 Spacer(modifier = Modifier.height(16.dp))
-
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { 
-                        password = it
-                        errorMessage = null 
-                    },
-                    label = { Text("Master Password") },
-                    visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                    trailingIcon = {
-                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                            Icon(
-                                imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                contentDescription = if (passwordVisible) "Hide password" else "Show password"
-                            )
-                        }
-                    },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth().testTag("restore_password_input")
-                )
-
-                if (isBiometricAvailable) {
-                    Spacer(modifier = Modifier.height(12.dp))
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("Enable Biometrics", style = MaterialTheme.typography.bodyMedium)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Enable Biometric Unlock", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                            Text("Unlock vault with fingerprint or face", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                         Switch(
                             checked = enableBiometrics,
                             onCheckedChange = { enableBiometrics = it }
                         )
                     }
                 }
+            }
 
-                if (errorMessage != null) {
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                        shape = RoundedCornerShape(8.dp)
+            if (errorMessage != null) {
+                Spacer(modifier = Modifier.height(20.dp))
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Icon(
+                            imageVector = Icons.Default.ErrorOutline,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
                         Text(
                             text = errorMessage!!,
                             color = MaterialTheme.colorScheme.onErrorContainer,
                             style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(8.dp)
+                            modifier = Modifier.weight(1f)
                         )
                     }
                 }
             }
-        },
-        confirmButton = {
+
+            Spacer(modifier = Modifier.height(32.dp))
+
             Button(
                 enabled = password.isNotBlank() && !isRestoring,
                 onClick = {
@@ -304,31 +383,39 @@ fun RestoreDirectDialog(
                     onRestore(p, enableBiometrics, { items, images ->
                         isRestoring = false
                         Toast.makeText(context, "Vault successfully restored! ($items items, $images photos)", Toast.LENGTH_LONG).show()
-                        onDismiss()
+                        onBack()
                     }, { err ->
                         isRestoring = false
                         errorMessage = err
                     })
-                }
+                },
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
+                    .testTag("restore_vault_btn")
             ) {
                 if (isRestoring) {
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("RESTORING...")
+                    CircularProgressIndicator(modifier = Modifier.size(22.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text("RESTORING VAULT...", fontWeight = FontWeight.Bold)
                 } else {
-                    Text("RESTORE VAULT")
+                    Icon(Icons.Default.FileOpen, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("RESTORE VAULT", fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
                 }
             }
-        },
-        dismissButton = {
+
+            Spacer(modifier = Modifier.height(16.dp))
+
             TextButton(
                 enabled = !isRestoring,
-                onClick = onDismiss
+                onClick = onBack
             ) {
-                Text("CANCEL")
+                Text("CANCEL AND GO BACK", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-    )
+    }
 }
 
 @Composable
@@ -344,12 +431,35 @@ fun SetupScreen(
     var enableBiometrics by remember { mutableStateOf(isBiometricAvailable) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var selectedBackupUri by remember { mutableStateOf<Uri?>(null) }
+    val context = LocalContext.current
 
     val restoreLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            selectedBackupUri = uri
+            try {
+                try {
+                    context.contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                } catch (_: Exception) {}
+
+                val cacheFile = File(context.cacheDir, "temp_vault_restore.json")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    cacheFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                if (cacheFile.exists() && cacheFile.length() > 0) {
+                    selectedBackupUri = Uri.fromFile(cacheFile)
+                } else {
+                    selectedBackupUri = uri
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                selectedBackupUri = uri
+            }
         }
     }
 
@@ -561,10 +671,10 @@ fun SetupScreen(
     }
 
     if (selectedBackupUri != null && onRestoreBackup != null) {
-        RestoreDirectDialog(
+        RestoreVaultScreen(
             fileUri = selectedBackupUri!!,
             isBiometricAvailable = isBiometricAvailable,
-            onDismiss = { selectedBackupUri = null },
+            onBack = { selectedBackupUri = null },
             onRestore = { pw, bio, onSucc, onErr ->
                 onRestoreBackup(selectedBackupUri!!, pw, bio, onSucc, onErr)
             }
@@ -587,12 +697,35 @@ fun LockedScreen(
     var passwordVisible by remember { mutableStateOf(false) }
     var showResetDialog by remember { mutableStateOf(false) }
     var selectedBackupUri by remember { mutableStateOf<Uri?>(null) }
+    val context = LocalContext.current
 
     val restoreLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            selectedBackupUri = uri
+            try {
+                try {
+                    context.contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                } catch (_: Exception) {}
+
+                val cacheFile = File(context.cacheDir, "temp_vault_restore.json")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    cacheFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                if (cacheFile.exists() && cacheFile.length() > 0) {
+                    selectedBackupUri = Uri.fromFile(cacheFile)
+                } else {
+                    selectedBackupUri = uri
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                selectedBackupUri = uri
+            }
         }
     }
 
@@ -811,10 +944,10 @@ fun LockedScreen(
     }
 
     if (selectedBackupUri != null && onRestoreBackup != null) {
-        RestoreDirectDialog(
+        RestoreVaultScreen(
             fileUri = selectedBackupUri!!,
             isBiometricAvailable = canUseBiometrics,
-            onDismiss = { selectedBackupUri = null },
+            onBack = { selectedBackupUri = null },
             onRestore = { pw, bio, onSucc, onErr ->
                 onRestoreBackup(selectedBackupUri!!, pw, bio, onSucc, onErr)
             }

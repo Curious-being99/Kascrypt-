@@ -1594,6 +1594,35 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
         return null
     }
 
+    private fun readBytesFromUri(context: Context, uri: android.net.Uri): ByteArray {
+        try {
+            return try {
+                if (uri.scheme == "file" && uri.path != null) {
+                    val f = File(uri.path!!)
+                    if (f.exists()) f.readBytes() else throw IllegalArgumentException("File does not exist: ${uri.path}")
+                } else {
+                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: throw IllegalArgumentException("Could not open input stream for file")
+                }
+            } catch (e: Exception) {
+                try {
+                    context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                        java.io.FileInputStream(pfd.fileDescriptor).use { it.readBytes() }
+                    } ?: throw e
+                } catch (_: Exception) {
+                    throw IllegalStateException("Failed to read backup file (${e.localizedMessage}). Please re-select the file or save it to Internal Storage.")
+                }
+            }
+        } finally {
+            if (uri.scheme == "file" && uri.path != null && uri.path!!.contains("temp_vault_restore")) {
+                try {
+                    val f = File(uri.path!!)
+                    if (f.exists()) f.delete()
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
     fun importEncryptedBackup(
         context: Context,
         inputUri: android.net.Uri,
@@ -1607,9 +1636,7 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val rawBytes = context.contentResolver.openInputStream(inputUri)?.use { stream ->
-                    stream.readBytes()
-                } ?: throw IllegalArgumentException("Could not read selected file from storage")
+                val rawBytes = readBytesFromUri(context, inputUri)
 
                 if (rawBytes.isEmpty()) {
                     throw IllegalArgumentException("Selected backup file is empty (0 bytes). Please ensure you selected a valid .json or .kascrypt backup file.")
@@ -1833,9 +1860,7 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val rawBytes = context.contentResolver.openInputStream(inputUri)?.use { stream ->
-                    stream.readBytes()
-                } ?: throw IllegalArgumentException("Could not read selected file from storage")
+                val rawBytes = readBytesFromUri(context, inputUri)
 
                 if (rawBytes.isEmpty()) {
                     throw IllegalArgumentException("Selected backup file is empty (0 bytes).")
