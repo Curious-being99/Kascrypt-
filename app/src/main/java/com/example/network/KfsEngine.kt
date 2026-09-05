@@ -571,6 +571,8 @@ object KfsEngine {
         stream.write(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(gas).array())
 
         // 14. Payload Hash (32 bytes)
+        // If payload is non-empty, payloadHash = BLAKE2b-256("TransactionSigningHash", payloadBytes)
+        // If payload is empty, payloadHash = 32 x 0x00 bytes
         val payloadBytes = if (!payloadHex.isNullOrEmpty()) CryptoManager.hexToBytes(payloadHex) else ByteArray(0)
         val payloadHash = if (payloadBytes.isNotEmpty()) {
             CryptoManager.hashBlake2bPersonalized(payloadBytes, tag)
