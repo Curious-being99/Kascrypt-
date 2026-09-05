@@ -165,6 +165,11 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
     init {
         checkSetup()
         checkKaspaNetwork()
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                db.kfsDao().purgeFailedRecords()
+            } catch (_: Exception) {}
+        }
     }
 
     fun setSearchQuery(query: String) {
@@ -288,24 +293,26 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (_: Exception) {}
 
-            // Persist the broadcast record to the Room database
-            try {
-                val recordEntity = com.example.db.KfsBroadcastRecordEntity(
-                    id = result.manifest.fileId,
-                    title = "Vault Sync (${currentItems.size} items, ${imagesMap.size} images)",
-                    manifestTxId = result.rootTxId ?: result.manifest.merkleRoot,
-                    merkleRoot = result.manifest.merkleRoot,
-                    chunkTxIdsJson = stringListAdapter.toJson(result.chunkTxIds),
-                    totalChunks = result.manifest.totalChunks,
-                    totalBytes = result.manifest.totalBytes,
-                    totalFeeSompis = result.totalFeeSompis,
-                    timestamp = result.manifest.timestamp,
-                    status = if (result.success) "CONFIRMED" else "REJECTED_OR_NOTICE",
-                    errorMessage = result.errorMessage
-                )
-                db.kfsDao().insertRecord(recordEntity)
-            } catch (e: Exception) {
-                e.printStackTrace()
+            // Persist the broadcast record to the Room database ONLY if the broadcast succeeded on-chain
+            if (result.success) {
+                try {
+                    val recordEntity = com.example.db.KfsBroadcastRecordEntity(
+                        id = result.manifest.fileId,
+                        title = "Vault Sync (${currentItems.size} items, ${imagesMap.size} images)",
+                        manifestTxId = result.rootTxId ?: result.manifest.merkleRoot,
+                        merkleRoot = result.manifest.merkleRoot,
+                        chunkTxIdsJson = stringListAdapter.toJson(result.chunkTxIds),
+                        totalChunks = result.manifest.totalChunks,
+                        totalBytes = result.manifest.totalBytes,
+                        totalFeeSompis = result.totalFeeSompis,
+                        timestamp = result.manifest.timestamp,
+                        status = "CONFIRMED",
+                        errorMessage = null
+                    )
+                    db.kfsDao().insertRecord(recordEntity)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
 
             if (result.success && currentWallet != null) {
@@ -1271,6 +1278,228 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
             "${context.packageName}.fileprovider",
             backupFile
         )
+    }
+
+    fun downloadVaultItemToDevice(
+        context: Context,
+        item: VaultItem,
+        onSuccess: (savedPath: String) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val key = derivedKey ?: run {
+            onError("Vault must be unlocked to download files")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val sanitizedTitle = item.title.replace(Regex("[^a-zA-Z0-9_.-]"), "_").trim('_').ifBlank { "kascrypt_item" }
+                var savedPath = ""
+
+                if (!item.imagePath.isNullOrBlank()) {
+                    val decryptedBitmap = getDecryptedBitmap(context, item.imagePath)
+                        ?: run {
+                            withContext(Dispatchers.Main) { onError("Could not decrypt image asset.") }
+                            return@launch
+                        }
+
+                    val stream = java.io.ByteArrayOutputStream()
+                    decryptedBitmap.compress(Bitmap.CompressFormat.JPEG, 95, stream)
+                    val imgBytes = stream.toByteArray()
+                    val fileName = "${sanitizedTitle}_${System.currentTimeMillis()}.jpg"
+
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                        val contentValues = android.content.ContentValues().apply {
+                            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                            put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+                            put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
+                        }
+                        val uri = context.contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+                        if (uri != null) {
+                            context.contentResolver.openOutputStream(uri)?.use { os ->
+                                os.write(imgBytes)
+                                os.flush()
+                            }
+                            savedPath = "Downloads/$fileName"
+                        }
+                    }
+
+                    if (savedPath.isBlank()) {
+                        val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                        if (!downloadsDir.exists()) downloadsDir.mkdirs()
+                        val targetFile = File(downloadsDir, fileName)
+                        targetFile.writeBytes(imgBytes)
+                        savedPath = "Downloads/${targetFile.name}"
+                    }
+                } else {
+                    val fileName = "${sanitizedTitle}_${System.currentTimeMillis()}.txt"
+                    val fileContent = "=== KASCRYPT SECURE ENTRY ===\nTitle: ${item.title}\nID: ${item.id}\nTimestamp: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(item.timestamp))}\n\nContent:\n${item.content}\n"
+                    val bytes = fileContent.toByteArray(Charsets.UTF_8)
+
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                        val contentValues = android.content.ContentValues().apply {
+                            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                            put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+                            put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
+                        }
+                        val uri = context.contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+                        if (uri != null) {
+                            context.contentResolver.openOutputStream(uri)?.use { os ->
+                                os.write(bytes)
+                                os.flush()
+                            }
+                            savedPath = "Downloads/$fileName"
+                        }
+                    }
+
+                    if (savedPath.isBlank()) {
+                        val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                        if (!downloadsDir.exists()) downloadsDir.mkdirs()
+                        val targetFile = File(downloadsDir, fileName)
+                        targetFile.writeBytes(bytes)
+                        savedPath = "Downloads/${targetFile.name}"
+                    }
+                }
+
+                withContext(Dispatchers.Main) {
+                    onSuccess(savedPath)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    onError(e.localizedMessage ?: "Failed to save file to device")
+                }
+            }
+        }
+    }
+
+    fun downloadKfsBackupToDevice(
+        context: Context,
+        manifestTxId: String,
+        onSuccess: (savedPath: String, itemsCount: Int, imagesCount: Int) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val key = derivedKey ?: run {
+            onError("Vault must be unlocked to decrypt and download files")
+            return
+        }
+        val priv = privateKey
+        val salt = walletKey
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val cleanId = manifestTxId.trim()
+                var manifestAndCiphertext: Pair<KfsManifest, ByteArray>? = null
+                try {
+                    manifestAndCiphertext = KfsEngine.fetchAndReconstructFromKaspa(cleanId) { _, _ -> }
+                } catch (e: Exception) {
+                    val cacheFile1 = File(context.cacheDir, "kfs_cache_$cleanId.dat")
+                    val cacheFile2 = File(context.filesDir, "kfs_cache_$cleanId.dat")
+                    val allRecords = db.kfsDao().getAllRecords().firstOrNull() ?: emptyList()
+                    val localRecord = db.kfsDao().getRecordById(cleanId)
+                        ?: allRecords.find { it.manifestTxId == cleanId || it.merkleRoot == cleanId || it.id == cleanId }
+
+                    val targetCacheFile = when {
+                        cacheFile1.exists() -> cacheFile1
+                        cacheFile2.exists() -> cacheFile2
+                        localRecord != null && File(context.cacheDir, "kfs_cache_${localRecord.id}.dat").exists() -> File(context.cacheDir, "kfs_cache_${localRecord.id}.dat")
+                        localRecord != null && File(context.cacheDir, "kfs_cache_${localRecord.merkleRoot}.dat").exists() -> File(context.cacheDir, "kfs_cache_${localRecord.merkleRoot}.dat")
+                        localRecord != null && File(context.cacheDir, "kfs_cache_${localRecord.manifestTxId}.dat").exists() -> File(context.cacheDir, "kfs_cache_${localRecord.manifestTxId}.dat")
+                        else -> null
+                    }
+
+                    if (targetCacheFile != null && targetCacheFile.exists()) {
+                        val cachedBytes = targetCacheFile.readBytes()
+                        val dummyManifest = KfsManifest(
+                            fileId = localRecord?.id ?: cleanId,
+                            timestamp = localRecord?.timestamp ?: System.currentTimeMillis(),
+                            totalBytes = cachedBytes.size,
+                            totalChunks = localRecord?.totalChunks ?: 1,
+                            merkleRoot = localRecord?.merkleRoot ?: cleanId,
+                            chunkHashes = emptyList(),
+                            chunkTxIds = emptyList(),
+                            algorithm = "XChaCha20-Poly1305+BLAKE2b",
+                            signature = null
+                        )
+                        manifestAndCiphertext = Pair(dummyManifest, cachedBytes)
+                    } else {
+                        throw e
+                    }
+                }
+
+                val (manifest, ciphertext) = manifestAndCiphertext!!
+                val decryptedBytes = try {
+                    CryptoManager.decryptXChaCha20Poly1305(ciphertext, key)
+                } catch (e: Exception) {
+                    throw IllegalStateException("Decryption failed. Please check master password.")
+                }
+
+                val decryptedText = String(decryptedBytes, Charsets.UTF_8).trim()
+                val payload = parseVaultPayloadFlexible(decryptedText)
+                    ?: throw IllegalStateException("Could not parse vault payload.")
+
+                // Save as an encrypted portable backup file on device
+                val payloadJson = backupPayloadAdapter.toJson(payload)
+                val payloadPlaintext = payloadJson.toByteArray(Charsets.UTF_8)
+                val encryptedPayload = CryptoManager.encryptXChaCha20Poly1305(payloadPlaintext, key)
+                val encryptedPayloadBase64 = android.util.Base64.encodeToString(encryptedPayload, android.util.Base64.NO_WRAP)
+
+                val signatureHex = if (priv != null) {
+                    try {
+                        val sig = CryptoManager.sign(encryptedPayload, priv)
+                        CryptoManager.bytesToHex(sig)
+                    } catch (_: Exception) { null }
+                } else null
+
+                val archive = EncryptedVaultBackupArchive(
+                    format = "KASCRYPT_ENCRYPTED_VAULT_BACKUP",
+                    version = 1,
+                    timestamp = System.currentTimeMillis(),
+                    itemCount = payload.items.size,
+                    imageCount = payload.imageAssets.size,
+                    saltHex = CryptoManager.bytesToHex(salt.toByteArray(Charsets.UTF_8)),
+                    encryptedPayloadBase64 = encryptedPayloadBase64,
+                    signatureHex = signatureHex
+                )
+
+                val archiveJson = backupArchiveAdapter.toJson(archive)
+                val archiveBytes = archiveJson.toByteArray(Charsets.UTF_8)
+                val fileName = "kascrypt_kfs_restored_${manifest.fileId.take(8)}_${System.currentTimeMillis()}.json"
+                var savedPath = ""
+
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    val contentValues = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                        put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "application/json")
+                        put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
+                    }
+                    val uri = context.contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+                    if (uri != null) {
+                        context.contentResolver.openOutputStream(uri)?.use { os ->
+                            os.write(archiveBytes)
+                            os.flush()
+                        }
+                        savedPath = "Downloads/$fileName"
+                    }
+                }
+
+                if (savedPath.isBlank()) {
+                    val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                    if (!downloadsDir.exists()) downloadsDir.mkdirs()
+                    val targetFile = File(downloadsDir, fileName)
+                    targetFile.writeBytes(archiveBytes)
+                    savedPath = "Downloads/${targetFile.name}"
+                }
+
+                withContext(Dispatchers.Main) {
+                    onSuccess(savedPath, payload.items.size, payload.imageAssets.size)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    onError(e.localizedMessage ?: "Failed to download restored backup")
+                }
+            }
+        }
     }
 
     private fun parseVaultPayloadFlexible(jsonString: String): VaultBackupPayload? {

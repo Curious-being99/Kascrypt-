@@ -1073,6 +1073,28 @@ fun VaultScreen(viewModel: VaultViewModel) {
                                             tint = MaterialTheme.colorScheme.primary
                                         )
                                     }
+                                    IconButton(
+                                        onClick = {
+                                            viewModel.downloadVaultItemToDevice(
+                                                context = context,
+                                                item = item,
+                                                onSuccess = { savedPath ->
+                                                    Toast.makeText(context, "Saved file to: $savedPath", Toast.LENGTH_SHORT).show()
+                                                },
+                                                onError = { err ->
+                                                    Toast.makeText(context, "Download failed: $err", Toast.LENGTH_SHORT).show()
+                                                }
+                                            )
+                                        },
+                                        modifier = Modifier.size(36.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Download,
+                                            contentDescription = "Download file to device",
+                                            modifier = Modifier.size(18.dp),
+                                            tint = Color(0xFF70C7BA)
+                                        )
+                                    }
                                     IconButton(onClick = {
                                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                         val clip = ClipData.newPlainText("Secret Content", item.content)
@@ -1158,9 +1180,61 @@ fun VaultScreen(viewModel: VaultViewModel) {
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
                         )
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Button(onClick = { previewImageBitmap = null }) {
-                            Text("Close")
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Button(
+                                onClick = {
+                                    previewImageBitmap?.let { bmp ->
+                                        val stream = java.io.ByteArrayOutputStream()
+                                        bmp.compress(Bitmap.CompressFormat.JPEG, 95, stream)
+                                        val imgBytes = stream.toByteArray()
+                                        val fileName = "kascrypt_image_${System.currentTimeMillis()}.jpg"
+                                        var savedPath = ""
+                                        try {
+                                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                                                val contentValues = android.content.ContentValues().apply {
+                                                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                                                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+                                                    put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
+                                                }
+                                                val uri = context.contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+                                                if (uri != null) {
+                                                    context.contentResolver.openOutputStream(uri)?.use { os ->
+                                                        os.write(imgBytes)
+                                                        os.flush()
+                                                    }
+                                                    savedPath = "Downloads/$fileName"
+                                                }
+                                            }
+                                            if (savedPath.isBlank()) {
+                                                val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                                                if (!downloadsDir.exists()) downloadsDir.mkdirs()
+                                                val targetFile = File(downloadsDir, fileName)
+                                                targetFile.writeBytes(imgBytes)
+                                                savedPath = "Downloads/${targetFile.name}"
+                                            }
+                                            Toast.makeText(context, "Saved image to: $savedPath", Toast.LENGTH_SHORT).show()
+                                        } catch (e: Exception) {
+                                            Toast.makeText(context, "Save failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Download Image", fontWeight = FontWeight.Bold)
+                            }
+                            OutlinedButton(
+                                onClick = { previewImageBitmap = null },
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Close")
+                            }
                         }
                     }
                 }
@@ -3468,13 +3542,36 @@ fun KaspaStorageContent(
                             border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF70C7BA)),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Row(
-                                modifier = Modifier.padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF70C7BA))
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Text(recoverySuccessMessage!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF70C7BA))
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(recoverySuccessMessage!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
+                                }
+                                if (recoverTxIdInput.isNotBlank()) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Button(
+                                        onClick = {
+                                            viewModel.downloadKfsBackupToDevice(
+                                                context = context,
+                                                manifestTxId = recoverTxIdInput.trim(),
+                                                onSuccess = { savedPath, items, images ->
+                                                    Toast.makeText(context, "Saved restored backup ($items items, $images images) to: $savedPath", Toast.LENGTH_LONG).show()
+                                                },
+                                                onError = { err ->
+                                                    Toast.makeText(context, "Download failed: $err", Toast.LENGTH_SHORT).show()
+                                                }
+                                            )
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black),
+                                        modifier = Modifier.fillMaxWidth().height(36.dp)
+                                    ) {
+                                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Save Restored Backup to Device Downloads", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
                             }
                         }
                         Spacer(modifier = Modifier.height(12.dp))
@@ -3558,35 +3655,64 @@ fun KaspaStorageContent(
                             }
                         }
                     } else {
-                        Button(
-                            onClick = {
-                                val txIdToUse = recoverTxIdInput.trim()
-                                if (txIdToUse.isEmpty()) {
-                                    recoveryErrorMessage = "Please enter or paste a valid Kaspa Manifest TxID."
-                                    return@Button
-                                }
-                                recoveryErrorMessage = null
-                                recoverySuccessMessage = null
-                                viewModel.restoreFromKaspaTxId(
-                                    manifestTxId = txIdToUse,
-                                    onSuccess = { itemsCount, imagesCount ->
-                                        recoverySuccessMessage = "Successfully recovered and decrypted $itemsCount vault entries and $imagesCount encrypted photos from Kaspa BlockDAG!"
-                                        recoveryErrorMessage = null
-                                    },
-                                    onError = { err ->
-                                        recoveryErrorMessage = err
-                                        recoverySuccessMessage = null
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    val txIdToUse = recoverTxIdInput.trim()
+                                    if (txIdToUse.isEmpty()) {
+                                        recoveryErrorMessage = "Please enter or paste a valid Kaspa Manifest TxID."
+                                        return@Button
                                     }
-                                )
-                            },
-                            enabled = recoverTxIdInput.isNotBlank(),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black),
-                            modifier = Modifier.fillMaxWidth().height(48.dp)
-                        ) {
-                            Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Download & Reconstruct from Kaspa", fontWeight = FontWeight.Bold)
+                                    recoveryErrorMessage = null
+                                    recoverySuccessMessage = null
+                                    viewModel.restoreFromKaspaTxId(
+                                        manifestTxId = txIdToUse,
+                                        onSuccess = { itemsCount, imagesCount ->
+                                            recoverySuccessMessage = "Successfully recovered and decrypted $itemsCount vault entries and $imagesCount encrypted photos from Kaspa BlockDAG!"
+                                            recoveryErrorMessage = null
+                                        },
+                                        onError = { err ->
+                                            recoveryErrorMessage = err
+                                            recoverySuccessMessage = null
+                                        }
+                                    )
+                                },
+                                enabled = recoverTxIdInput.isNotBlank(),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black),
+                                modifier = Modifier.fillMaxWidth().height(48.dp)
+                            ) {
+                                Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Download & Reconstruct from Kaspa", fontWeight = FontWeight.Bold)
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    val txIdToUse = recoverTxIdInput.trim()
+                                    if (txIdToUse.isEmpty()) {
+                                        recoveryErrorMessage = "Please enter or paste a valid Kaspa Manifest TxID."
+                                        return@OutlinedButton
+                                    }
+                                    viewModel.downloadKfsBackupToDevice(
+                                        context = context,
+                                        manifestTxId = txIdToUse,
+                                        onSuccess = { savedPath, items, images ->
+                                            Toast.makeText(context, "Saved file ($items items, $images images) to: $savedPath", Toast.LENGTH_LONG).show()
+                                        },
+                                        onError = { err ->
+                                            Toast.makeText(context, "Download failed: $err", Toast.LENGTH_SHORT).show()
+                                        }
+                                    )
+                                },
+                                enabled = recoverTxIdInput.isNotBlank(),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.fillMaxWidth().height(42.dp)
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF70C7BA))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Download Restored File Directly to Device", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            }
                         }
                     }
 
@@ -3741,7 +3867,9 @@ fun KaspaStorageContent(
                                                 color = when (record.status.uppercase()) {
                                                     "CONFIRMED" -> Color(0xFF70C7BA).copy(alpha = 0.2f)
                                                     "RESTORED" -> Color(0xFF4CAF50).copy(alpha = 0.2f)
-                                                    else -> MaterialTheme.colorScheme.error.copy(alpha = 0.2f)
+                                                    "ON_CHAIN_SYNCED" -> Color(0xFF00E5FF).copy(alpha = 0.2f)
+                                                    "SAVED" -> Color(0xFFFFD54F).copy(alpha = 0.2f)
+                                                    else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
                                                 }
                                             ) {
                                                 Text(
@@ -3752,7 +3880,9 @@ fun KaspaStorageContent(
                                                     color = when (record.status.uppercase()) {
                                                         "CONFIRMED" -> Color(0xFF70C7BA)
                                                         "RESTORED" -> Color(0xFF4CAF50)
-                                                        else -> MaterialTheme.colorScheme.error
+                                                        "ON_CHAIN_SYNCED" -> Color(0xFF00E5FF)
+                                                        "SAVED" -> Color(0xFFFFD54F)
+                                                        else -> MaterialTheme.colorScheme.primary
                                                     }
                                                 )
                                             }
@@ -3876,7 +4006,7 @@ fun KaspaStorageContent(
                                         // Action buttons
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                                         ) {
                                             Button(
                                                 onClick = {
@@ -3885,11 +4015,32 @@ fun KaspaStorageContent(
                                                 },
                                                 shape = RoundedCornerShape(10.dp),
                                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF70C7BA), contentColor = Color.Black),
-                                                modifier = Modifier.weight(1f).height(38.dp)
+                                                modifier = Modifier.weight(1.3f).height(38.dp)
                                             ) {
                                                 Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(14.dp))
-                                                Spacer(modifier = Modifier.width(6.dp))
-                                                Text("Restore Vault from this ID", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Restore Vault", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                            }
+
+                                            OutlinedButton(
+                                                onClick = {
+                                                    viewModel.downloadKfsBackupToDevice(
+                                                        context = context,
+                                                        manifestTxId = record.manifestTxId,
+                                                        onSuccess = { savedPath, items, images ->
+                                                            Toast.makeText(context, "Saved file to: $savedPath", Toast.LENGTH_LONG).show()
+                                                        },
+                                                        onError = { err ->
+                                                            Toast.makeText(context, "Download failed: $err", Toast.LENGTH_SHORT).show()
+                                                        }
+                                                    )
+                                                },
+                                                shape = RoundedCornerShape(10.dp),
+                                                modifier = Modifier.weight(1f).height(38.dp)
+                                            ) {
+                                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color(0xFF70C7BA))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Download", fontSize = 11.sp)
                                             }
 
                                             OutlinedButton(
@@ -3906,8 +4057,8 @@ fun KaspaStorageContent(
                                                 modifier = Modifier.height(38.dp)
                                             ) {
                                                 Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(14.dp))
-                                                Spacer(modifier = Modifier.width(4.dp))
-                                                Text("Explorer", fontSize = 12.sp)
+                                                Spacer(modifier = Modifier.width(2.dp))
+                                                Text("Explorer", fontSize = 11.sp)
                                             }
                                         }
                                     }

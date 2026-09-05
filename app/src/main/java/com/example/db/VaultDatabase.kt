@@ -66,7 +66,7 @@ interface VaultDao {
 
 @Dao
 interface KfsDao {
-    @Query("SELECT * FROM kfs_broadcast_records ORDER BY timestamp DESC")
+    @Query("SELECT * FROM kfs_broadcast_records WHERE status IN ('CONFIRMED', 'RESTORED', 'ON_CHAIN_SYNCED', 'SAVED') ORDER BY timestamp DESC")
     fun getAllRecords(): Flow<List<KfsBroadcastRecordEntity>>
 
     @Query("SELECT * FROM kfs_broadcast_records WHERE id = :id LIMIT 1")
@@ -77,6 +77,9 @@ interface KfsDao {
 
     @Query("DELETE FROM kfs_broadcast_records WHERE id = :id")
     suspend fun deleteRecord(id: String)
+
+    @Query("DELETE FROM kfs_broadcast_records WHERE status NOT IN ('CONFIRMED', 'RESTORED', 'ON_CHAIN_SYNCED', 'SAVED')")
+    suspend fun purgeFailedRecords()
 
     @Query("DELETE FROM kfs_broadcast_records")
     suspend fun clearAllRecords()
