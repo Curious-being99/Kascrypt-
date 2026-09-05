@@ -33,43 +33,50 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Prepare Debug Keystore for local checks
-        run: |
-          if [ -f "debug.keystore.base64" ] && [ ! -f "debug.keystore" ]; then
-            echo "Restoring debug.keystore from debug.keystore.base64..."
-            base64 -d debug.keystore.base64 > debug.keystore
-          elif [ ! -f "debug.keystore" ]; then
-            echo "Generating fallback debug.keystore for local dev..."
-            keytool -genkey -v -keystore debug.keystore \
-              -alias androiddebugkey \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -storepass android \
-              -keypass android \
-              -dname "CN=Android Debug,O=Android,C=US"
-          fi
-
-      # Check for Release Keystore Secrets
+      # Check and Verify Release Keystore Secrets
       - name: Check and Configure Release Keystore
         id: check-secrets
         run: |
+          rm -f release.keystore
+          KEYSTORE_VALID=false
+          
           if [ -n "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" ] && \
              [ -n "${{ secrets.STORE_PASSWORD }}" ] && \
              [ -n "${{ secrets.KEY_PASSWORD }}" ] && \
              ([ -n "${{ secrets.RELEASE_KEY_ALIAS }}" ] || [ -n "${{ secrets.KEY_ALIAS }}" ]); then
-            echo "Release keystore secrets found. Decoding signing keystore..."
-            echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > release.keystore
-            echo "HAS_RELEASE_KEYSTORE=true" >> $GITHUB_ENV
-            echo "KEYSTORE_PATH=$(pwd)/release.keystore" >> $GITHUB_ENV
-            echo "STORE_PASSWORD=${{ secrets.STORE_PASSWORD }}" >> $GITHUB_ENV
-            echo "RELEASE_KEY_ALIAS=${{ secrets.RELEASE_KEY_ALIAS || secrets.KEY_ALIAS }}" >> $GITHUB_ENV
-            echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_ENV
-            echo "has_keystore=true" >> $GITHUB_OUTPUT
-          else
-            echo "Release keystore secrets missing or incomplete."
-            echo "Will build official unsigned release APK. Debug APK will NOT be released."
+            
+            ALIAS="${{ secrets.RELEASE_KEY_ALIAS || secrets.KEY_ALIAS }}"
+            STORE_PASS="${{ secrets.STORE_PASSWORD }}"
+            KEY_PASS="${{ secrets.KEY_PASSWORD }}"
+            
+            echo "Release keystore secrets detected. Decoding release.keystore..."
+            echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | tr -d '\r\n ' | base64 -d > release.keystore 2>/dev/null || true
+            
+            if [ -f "release.keystore" ] && [ -s "release.keystore" ]; then
+              echo "Testing keystore password and alias with keytool..."
+              if keytool -list -keystore release.keystore -storepass "$STORE_PASS" -alias "$ALIAS" >/dev/null 2>&1; then
+                echo "Keystore and alias verified successfully!"
+                KEYSTORE_VALID=true
+                echo "HAS_RELEASE_KEYSTORE=true" >> $GITHUB_ENV
+                echo "ENABLE_RELEASE_SIGNING=true" >> $GITHUB_ENV
+                echo "KEYSTORE_PATH=$(pwd)/release.keystore" >> $GITHUB_ENV
+                echo "STORE_PASSWORD=$STORE_PASS" >> $GITHUB_ENV
+                echo "RELEASE_KEY_ALIAS=$ALIAS" >> $GITHUB_ENV
+                echo "KEY_PASSWORD=$KEY_PASS" >> $GITHUB_ENV
+                echo "has_keystore=true" >> $GITHUB_OUTPUT
+              else
+                echo "WARNING: Keystore verification failed (keystore password or alias in GitHub Secrets does not match the keystore file)."
+                echo "Will fall back safely to building and releasing the official unsigned release APK."
+                rm -f release.keystore
+              fi
+            fi
+          fi
+
+          if [ "$KEYSTORE_VALID" != "true" ]; then
+            echo "No valid release keystore configured or verification failed."
+            echo "Building official unsigned release APK. Debug APK will NOT be released."
             echo "HAS_RELEASE_KEYSTORE=false" >> $GITHUB_ENV
+            echo "ENABLE_RELEASE_SIGNING=false" >> $GITHUB_ENV
             echo "has_keystore=false" >> $GITHUB_OUTPUT
           fi
 
