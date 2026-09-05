@@ -1,4 +1,4 @@
-name: Build Android APK (Debug, Release & Unsigned)
+name: Build Android APK (Release & Unsigned)
 
 on:
   push:
@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   build:
-    name: Build All APK Variants
+    name: Build & Release APK
     runs-on: ubuntu-latest
 
     steps:
@@ -33,13 +33,13 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Prepare Debug Keystore
+      - name: Prepare Debug Keystore for local checks
         run: |
           if [ -f "debug.keystore.base64" ] && [ ! -f "debug.keystore" ]; then
             echo "Restoring debug.keystore from debug.keystore.base64..."
             base64 -d debug.keystore.base64 > debug.keystore
           elif [ ! -f "debug.keystore" ]; then
-            echo "Generating fallback debug.keystore..."
+            echo "Generating fallback debug.keystore for local dev..."
             keytool -genkey -v -keystore debug.keystore \
               -alias androiddebugkey \
               -keyalg RSA \
@@ -50,107 +50,75 @@ jobs:
               -dname "CN=Android Debug,O=Android,C=US"
           fi
 
-      # 1. Build Standard Debug APK
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug --stacktrace
-
-      # 2. Prepare Keystore and Build Release APK
-      - name: Prepare Signing Keystore
-        id: prepare-keystore
+      # Check for Release Keystore Secrets
+      - name: Check and Configure Release Keystore
+        id: check-secrets
         run: |
-          if [ -n "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" ]; then
-            echo "Using custom release keystore secret from GitHub repository..."
+          if [ -n "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" ] && \
+             [ -n "${{ secrets.STORE_PASSWORD }}" ] && \
+             [ -n "${{ secrets.KEY_PASSWORD }}" ] && \
+             ([ -n "${{ secrets.RELEASE_KEY_ALIAS }}" ] || [ -n "${{ secrets.KEY_ALIAS }}" ]); then
+            echo "Release keystore secrets found. Decoding signing keystore..."
             echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > release.keystore
+            echo "HAS_RELEASE_KEYSTORE=true" >> $GITHUB_ENV
             echo "KEYSTORE_PATH=$(pwd)/release.keystore" >> $GITHUB_ENV
-            echo "STORE_PASSWORD=${{ secrets.STORE_PASSWORD || 'android' }}" >> $GITHUB_ENV
-            echo "KEY_ALIAS=${{ secrets.KEY_ALIAS || 'upload' }}" >> $GITHUB_ENV
-            echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD || 'android' }}" >> $GITHUB_ENV
+            echo "STORE_PASSWORD=${{ secrets.STORE_PASSWORD }}" >> $GITHUB_ENV
+            echo "RELEASE_KEY_ALIAS=${{ secrets.RELEASE_KEY_ALIAS || secrets.KEY_ALIAS }}" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_ENV
+            echo "has_keystore=true" >> $GITHUB_OUTPUT
           else
-            echo "Generating self-contained permanent release keystore for CI..."
-            keytool -genkey -v -keystore release.keystore \
-              -alias upload \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -storepass android \
-              -keypass android \
-              -dname "CN=KasCrypt, OU=Security, O=KasCrypt, L=Global, S=Global, C=US"
-            echo "KEYSTORE_PATH=$(pwd)/release.keystore" >> $GITHUB_ENV
-            echo "STORE_PASSWORD=android" >> $GITHUB_ENV
-            echo "KEY_ALIAS=upload" >> $GITHUB_ENV
-            echo "KEY_PASSWORD=android" >> $GITHUB_ENV
+            echo "Release keystore secrets missing or incomplete."
+            echo "Will build official unsigned release APK. Debug APK will NOT be released."
+            echo "HAS_RELEASE_KEYSTORE=false" >> $GITHUB_ENV
+            echo "has_keystore=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Build Signed Release APK
+      # Build Release APK
+      - name: Build Release APK
         run: ./gradlew assembleRelease --stacktrace
 
-      # 3. Build Permanent Unsigned Release APK
-      - name: Generate Unsigned Release APK
+      # Process and Prepare Release Assets
+      - name: Package Release Assets
+        id: package-assets
         run: |
-          mkdir -p build-unsigned
-          SIGNED_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
-          if [ -n "$SIGNED_APK" ]; then
-            echo "Producing clean unsigned APK from: $SIGNED_APK"
-            cp "$SIGNED_APK" build-unsigned/app-release-unsigned.apk
-            # Strip META-INF signatures to produce true unsigned release APK
-            zip -d build-unsigned/app-release-unsigned.apk "META-INF/*.SF" "META-INF/*.RSA" "META-INF/*.DSA" "META-INF/*.EC" "META-INF/MANIFEST.MF" || true
-            echo "Successfully created build-unsigned/app-release-unsigned.apk"
-          else
-            echo "Signed release APK not found!"
+          mkdir -p release-assets
+          RELEASE_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          
+          if [ -z "$RELEASE_APK" ]; then
+            echo "Error: No release APK found in app/build/outputs/apk/release!"
             exit 1
           fi
 
-      # 4. Upload All Artifacts Permanently (retention-days: 90)
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
-          retention-days: 90
-          if-no-files-found: error
-
-      - name: Upload Signed Release APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release-signed-apk
-          path: app/build/outputs/apk/release/*.apk
-          retention-days: 90
-          if-no-files-found: error
-
-      - name: Upload Unsigned Release APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release-unsigned-apk
-          path: build-unsigned/*.apk
-          retention-days: 90
-          if-no-files-found: error
-
-      # 5. Prepare and Publish APKs to GitHub Release (Latest Tag)
-      - name: Prepare Named Release Assets
-        if: github.event_name != 'pull_request'
-        run: |
-          mkdir -p release-assets
-          DEBUG_APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
-          RELEASE_SIGNED_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
-          UNSIGNED_APK="build-unsigned/app-release-unsigned.apk"
-
-          if [ -n "$DEBUG_APK" ]; then
-            cp "$DEBUG_APK" release-assets/KasCrypt-debug.apk
+          if [ "$HAS_RELEASE_KEYSTORE" = "true" ]; then
+            echo "Processing signed release APK: $RELEASE_APK"
+            cp "$RELEASE_APK" release-assets/KasCrypt-release.apk
+            echo "Output: release-assets/KasCrypt-release.apk"
+          else
+            echo "Processing unsigned release APK: $RELEASE_APK"
+            cp "$RELEASE_APK" release-assets/KasCrypt-release-unsigned.apk
+            # Ensure clean unsigned release APK by stripping signatures if any were inherited
+            zip -d release-assets/KasCrypt-release-unsigned.apk "META-INF/*.SF" "META-INF/*.RSA" "META-INF/*.DSA" "META-INF/*.EC" "META-INF/MANIFEST.MF" 2>/dev/null || true
+            echo "Output: release-assets/KasCrypt-release-unsigned.apk"
           fi
-          if [ -n "$RELEASE_SIGNED_APK" ]; then
-            cp "$RELEASE_SIGNED_APK" release-assets/KasCrypt-release-signed.apk
-          fi
-          if [ -f "$UNSIGNED_APK" ]; then
-            cp "$UNSIGNED_APK" release-assets/KasCrypt-release-unsigned.apk
-          fi
+
           ls -lh release-assets/
 
+      # Upload Artifact to GitHub Actions Run
+      - name: Upload Release Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.HAS_RELEASE_KEYSTORE == 'true' && 'KasCrypt-release-signed' || 'KasCrypt-release-unsigned' }}
+          path: release-assets/*.apk
+          retention-days: 90
+          if-no-files-found: error
+
+      # Publish ONLY on Release Tags (Never publish Debug APK to Releases)
       - name: Publish to GitHub Release
-        if: github.event_name != 'pull_request'
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
-          name: ${{ github.ref_type == 'tag' && github.ref_name || 'KasCrypt Latest Release' }}
+          name: ${{ github.ref_type == 'tag' && github.ref_name || 'KasCrypt Release' }}
           draft: false
           prerelease: false
           make_latest: true
@@ -158,3 +126,4 @@ jobs:
           files: release-assets/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

@@ -447,13 +447,7 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                         onResult(false, "Incorrect master password.")
                     }
                 } else {
-                    // Fallback comparison with active derivedKey if available
-                    val isValid = derivedKey != null && testDerived.contentEquals(derivedKey)
-                    if (isValid) {
-                        onResult(true, null)
-                    } else {
-                        onResult(false, "Incorrect master password.")
-                    }
+                    onResult(false, "Authentication verifier not configured.")
                 }
             } catch (e: Exception) {
                 onResult(false, "Invalid master password.")
@@ -540,7 +534,7 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                 val derived = CryptoManager.deriveKey(password, newWalletKey)
 
                 // 3. Generate signature keys and encrypt private key with derivedKey
-                val keyPair = CryptoManager.generateSignKeyPairFallback()
+                val keyPair = CryptoManager.generateMLDSAKeyPair()
                 val privEncrypted = CryptoManager.encryptXChaCha20Poly1305(keyPair.private.encoded, derived)
                 val privEncoded = kotlin.io.encoding.Base64.Default.encode(privEncrypted)
                 val pubEncoded = kotlin.io.encoding.Base64.Default.encode(keyPair.public.encoded)
@@ -607,7 +601,7 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                 derivedKey = derived
                 activeSessionPassword = password
                 
-                // Load ML-DSA / Ed25519 keys safely
+                // Load ML-DSA keys safely
                 try {
                     val privStr = db.vaultDao().getConfig("ml_dsa_priv")
                     val pubStr = db.vaultDao().getConfig("ml_dsa_pub")
@@ -615,23 +609,16 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                     if (privStr != null && pubStr != null) {
                         val privBytes = kotlin.io.encoding.Base64.Default.decode(privStr)
                         val pubBytes = kotlin.io.encoding.Base64.Default.decode(pubStr)
-                        val decryptedPriv = try {
-                            CryptoManager.decryptXChaCha20Poly1305(privBytes, derived)
-                        } catch (e: Exception) {
-                            // Fallback for legacy unencrypted private key entries
-                            privBytes
-                        }
+                        val decryptedPriv = CryptoManager.decryptXChaCha20Poly1305(privBytes, derived)
                         privateKey = CryptoManager.getPrivateKey(decryptedPriv, algo)
                         publicKey = CryptoManager.getPublicKey(pubBytes, algo)
                     } else {
-                        val keyPair = CryptoManager.generateSignKeyPairFallback()
-                        privateKey = keyPair.private
-                        publicKey = keyPair.public
+                        privateKey = null
+                        publicKey = null
                     }
                 } catch (e: Exception) {
-                    val keyPair = CryptoManager.generateSignKeyPairFallback()
-                    privateKey = keyPair.private
-                    publicKey = keyPair.public
+                    privateKey = null
+                    publicKey = null
                 }
 
                 loadItems()
@@ -807,28 +794,6 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
                 
                 val item = vaultItemAdapter.fromJson(json)
                 if (item != null) {
-                    if (pub != null && entity.signature.isNotEmpty()) {
-                        val isSigValid = try {
-                            CryptoManager.verify(entity.ciphertext, entity.signature, pub)
-                        } catch (e: Exception) {
-                            false
-                        }
-                        if (!isSigValid && priv != null) {
-                            try {
-                                val newSig = CryptoManager.sign(entity.ciphertext, priv)
-                                db.vaultDao().insertEntry(entity.copy(signature = newSig))
-                            } catch (e: Exception) {
-                                // non-fatal
-                            }
-                        }
-                    } else if (priv != null && entity.signature.isEmpty()) {
-                        try {
-                            val newSig = CryptoManager.sign(entity.ciphertext, priv)
-                            db.vaultDao().insertEntry(entity.copy(signature = newSig))
-                        } catch (e: Exception) {
-                            // non-fatal
-                        }
-                    }
                     items.add(item)
                 }
             } catch (e: Exception) {

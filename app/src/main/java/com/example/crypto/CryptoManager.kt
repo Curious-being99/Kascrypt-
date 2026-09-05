@@ -132,11 +132,6 @@ object CryptoManager {
             }
         }
     }
-    
-    // Strict NIST Post-Quantum ML-DSA Key Generation (Enforced Parameter Set: ML-DSA-65 / NIST Level 3)
-    fun generateSignKeyPairFallback(parameterSet: String = "ML-DSA-65"): KeyPair {
-        return generateMLDSAKeyPair(parameterSet)
-    }
 
     fun sign(data: ByteArray, privateKey: PrivateKey): ByteArray {
         val candidateProviders = listOf(
