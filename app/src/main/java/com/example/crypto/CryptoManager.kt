@@ -64,7 +64,7 @@ object CryptoManager {
 
     fun hashBlake2bPersonalized(data: ByteArray, personalizationTag: String = "TransactionSigningHash"): ByteArray {
         val keyBytes = personalizationTag.toByteArray(Charsets.UTF_8)
-        val digest = Blake2bDigest(keyBytes)
+        val digest = Blake2bDigest(keyBytes, 32, null, null)
         digest.update(data, 0, data.size)
         val result = ByteArray(digest.digestSize)
         digest.doFinal(result, 0)

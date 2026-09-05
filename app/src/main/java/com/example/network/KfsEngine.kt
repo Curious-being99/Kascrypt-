@@ -491,6 +491,7 @@ object KfsEngine {
         inputIndex: Int,
         utxoAmount: Long,
         utxoScriptPubKeyHex: String,
+        utxoScriptPubKeyVersion: Int = 0,
         sigHashType: Byte = 0x01
     ): ByteArray {
         val tag = "TransactionSigningHash"
@@ -534,7 +535,7 @@ object KfsEngine {
 
         // 6. ScriptPublicKey (2 bytes version + 8 bytes length + script bytes)
         val scriptBytes = CryptoManager.hexToBytes(utxoScriptPubKeyHex)
-        stream.write(ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(0.toShort()).array())
+        stream.write(ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(utxoScriptPubKeyVersion.toShort()).array())
         stream.write(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(scriptBytes.size.toLong()).array())
         stream.write(scriptBytes)
 
@@ -657,13 +658,14 @@ object KfsEngine {
             inputIndex = 0,
             utxoAmount = inputAmount,
             utxoScriptPubKeyHex = scriptPubKeyStr,
+            utxoScriptPubKeyVersion = utxoScriptPubKey?.version ?: 0,
             sigHashType = 0x01
         )
 
         val schnorrSig = com.example.crypto.KaspaWalletManager.signSchnorr(sighash, wallet.privateKeyHex)
         val schnorrSigHex = CryptoManager.bytesToHex(schnorrSig)
-        // Kaspa canonical push of 64-byte Schnorr signature (OP_DATA_64 = 0x40)
-        val signatureScript = "40" + schnorrSigHex
+        // Kaspa P2PK 65-byte signature push: opcode 0x41 (65 bytes) + 64-byte Schnorr signature + 0x01 (SIGHASH_ALL)
+        val signatureScript = "41" + schnorrSigHex + "01"
 
         val signedInput = initialInput.copy(signatureScript = signatureScript)
 

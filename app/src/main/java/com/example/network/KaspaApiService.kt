@@ -1,12 +1,37 @@
 package com.example.network
 
+import com.squareup.moshi.FromJson
 import com.squareup.moshi.JsonClass
+import com.squareup.moshi.JsonReader
+import com.squareup.moshi.JsonWriter
+import com.squareup.moshi.Moshi
+import com.squareup.moshi.ToJson
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Path
+
+object FlexibleLongAdapter {
+    @FromJson
+    fun fromJson(reader: JsonReader): Long {
+        return if (reader.peek() == JsonReader.Token.STRING) {
+            reader.nextString().toLongOrNull() ?: 0L
+        } else {
+            reader.nextLong()
+        }
+    }
+
+    @ToJson
+    fun toJson(writer: JsonWriter, value: Long?) {
+        if (value == null) {
+            writer.nullValue()
+        } else {
+            writer.value(value)
+        }
+    }
+}
 
 @JsonClass(generateAdapter = true)
 data class KaspaNetworkInfoResponse(
@@ -162,9 +187,12 @@ object KaspaNetwork {
     val api: KaspaApiService
         get() {
             if (retrofit == null) {
+                val moshi = Moshi.Builder()
+                    .add(FlexibleLongAdapter)
+                    .build()
                 retrofit = Retrofit.Builder()
                     .baseUrl(currentUrl)
-                    .addConverterFactory(MoshiConverterFactory.create())
+                    .addConverterFactory(MoshiConverterFactory.create(moshi))
                     .build()
             }
             return retrofit!!.create(KaspaApiService::class.java)
